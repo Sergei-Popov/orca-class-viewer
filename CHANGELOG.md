@@ -7,6 +7,8 @@ All notable changes to this plugin are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-15
+
 ### Added
 
 - `.class` files open in Class File Viewer by default, with four tabs: **Outline** (the
