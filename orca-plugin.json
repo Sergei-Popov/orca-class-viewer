@@ -13,6 +13,36 @@
   "repository": "https://github.com/Sergei-Popov/orca-class-viewer",
   "license": "MIT",
   "icon": "images/icon.png",
+  "cover": {
+    "path": "images/cover.png",
+    "alt": "A jar with Orca's dark theme: the package tree with nested classes, and the selected class's declarations in Java syntax in the Outline tab."
+  },
+  "screenshots": [
+    {
+      "path": "images/bytecode-light.png",
+      "alt": "The Bytecode tab with Orca's light theme: methods listed like javap -c -v, with instructions, constant pool references, line numbers and locals.",
+      "caption": "Bytecode listed like javap, with links to the constant pool and jump targets.",
+      "theme": "light"
+    },
+    {
+      "path": "images/constant-pool-dark.png",
+      "alt": "The Constant pool tab with Orca's dark theme: a selected Fieldref, the entries it refers to and the methods that use it.",
+      "caption": "A filterable constant pool that shows what refers to each entry.",
+      "theme": "dark"
+    },
+    {
+      "path": "images/multi-release-light.png",
+      "alt": "A multi-release class in a jar with Orca's light theme: the Java 8 badge in the header and a switch between the base class and its Java 11 version.",
+      "caption": "The Java version of every class, and each version of a multi-release class.",
+      "theme": "light"
+    },
+    {
+      "path": "images/jar-overview-light.png",
+      "alt": "A jar's overview with Orca's light theme: class and package counts, a chart of the Java versions, the module, main class and manifest.",
+      "caption": "A jar at a glance: Java versions, module, main class and manifest.",
+      "theme": "light"
+    }
+  ],
   "engines": {
     "orca": ">=1.4.248"
   },
