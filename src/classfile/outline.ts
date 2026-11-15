@@ -1,7 +1,8 @@
 // The Outline: a class as Java source with declarations only. Method bodies stay compiled code;
 // this is not a decompiler. Member classes from the same archive nest inside their outer class.
 
-import { type InnerClassEntry, findAttribute } from './attributes'
+import { type AttributeInfo, type InnerClassEntry, findAttribute } from './attributes'
+import { MAX_LISTED_ROWS, RowBudget, joinWithin } from './budget'
 import type { FormatErrorCode } from './bytes'
 import type { ClassFile, Member } from './classfile'
 import {
@@ -12,6 +13,7 @@ import {
   classKind,
   fieldDeclaration,
   fieldType,
+  inlineAnnotations,
   makeNamer,
   methodDeclaration,
   methodDeclarationAt,
@@ -40,7 +42,8 @@ export type OutlineLine = {
   name?: { from: number; to: number }
 }
 
-export type Outline = { lines: OutlineLine[]; text: string }
+/** `cut` when the outline stopped at its row budget. */
+export type Outline = { lines: OutlineLine[]; text: string; cut: boolean }
 
 /** The comments the outline writes, in the UI language. */
 export type OutlineComments = {
@@ -70,6 +73,10 @@ export type OutlineComments = {
   damaged: string
   /** "compiled code, damaged: {reason}" for a Code attribute that cannot be read */
   damagedCode: string
+  /** "{n} more annotations" after the first ones of a member */
+  moreAnnotations: string
+  /** Where the outline stops once it has written as much as it may. */
+  cut: string
 }
 
 export const ENGLISH_COMMENTS: OutlineComments = {
@@ -92,7 +99,9 @@ export const ENGLISH_COMMENTS: OutlineComments = {
     clojure: 'Compiled by Clojure; shown as the JVM sees it.'
   },
   damaged: 'The file is damaged after this point: {reason}.',
-  damagedCode: 'compiled code, damaged: {reason}'
+  damagedCode: 'compiled code, damaged: {reason}',
+  moreAnnotations: '{n} more annotations',
+  cut: 'The rest is not shown: the outline is full.'
 }
 
 export type OutlineOptions = {
@@ -101,7 +110,12 @@ export type OutlineOptions = {
   comments?: OutlineComments
   /** A parser error in the comments' language; the parser's English message by default. */
   reason?: (code: FormatErrorCode | undefined, message: string) => string
+  /** The most rows the outline writes; `MAX_LISTED_ROWS` by default. */
+  limit?: number
 }
+
+/** A member's annotations past this many are counted in one comment: real code has a handful. */
+export const MAX_ANNOTATION_LINES = 100
 
 const fill = (template: string, values: Record<string, string | number>) =>
   template.replace(/\{(\w+)\}/g, (m, k: string) => (k in values ? String(values[k]) : m))
@@ -112,15 +126,37 @@ const reasonOf = (options: OutlineOptions, code: FormatErrorCode | undefined, me
 const INDENT = '    '
 const MAX_NESTING = 8
 
-/** Lines of the outline; class names the namer marked become links. */
+/**
+ * Lines of the outline; class names the namer marked become links. With a budget, each line takes
+ * its rows; the first line that does not fit is replaced by `cutText`, and the writer is `full`.
+ */
 class Writer {
   readonly lines: OutlineLine[] = []
   private readonly targets: readonly string[]
-  constructor(targets: readonly string[]) {
+  private readonly budget: RowBudget | undefined
+  private readonly cutText: string
+  constructor(targets: readonly string[], budget?: RowBudget, cutText = '') {
     this.targets = targets
+    this.budget = budget
+    this.cutText = cutText
+  }
+  get full(): boolean {
+    return this.budget?.cut ?? false
   }
   /** `name` is `[from, to)` of the declared name in `text`, before its link marks are taken out. */
   push(depth: number, text: string, target?: OutlineTarget, name?: [number, number]): void {
+    if (this.full) return
+    if (this.budget && !this.budget.line(INDENT.length * depth + text.length)) {
+      this.lines.push({ text: `${INDENT.repeat(depth)}// ${this.cutText}` })
+      return
+    }
+    this.write(depth, text, target, name)
+  }
+  /** A closing brace: written even when full, so the classes that were opened end. */
+  close(depth: number, target?: OutlineTarget): void {
+    this.write(depth, '}', target)
+  }
+  private write(depth: number, text: string, target?: OutlineTarget, name?: [number, number]): void {
     const indent = INDENT.repeat(depth)
     const taken = takeLinks(text, this.targets)
     const line: OutlineLine = { text: indent + taken.text }
@@ -166,8 +202,9 @@ function writeClass(
   const pool = cls.pool
   const kind = classKind(cls)
   const target: OutlineTarget = { kind: 'class', name: cls.name }
-  for (const a of annotationsOf(cls.attributes)) out.push(depth, annotationText(a, pool, namer), target)
+  writeAnnotations(out, cls.attributes, cls, namer, depth, c, target)
   out.push(depth, `${classDeclaration(cls, namer)} {`, target)
+  if (out.full) return out.close(depth, target)
   const inner = depth + 1
   const isInterface = kind === 'interface' || kind === 'annotation'
   const recordFields = new Set(
@@ -177,31 +214,35 @@ function writeClass(
   // Enum constants first, as source has them.
   const constants = cls.fields.filter((f) => f.access & ACC.ENUM)
   if (kind === 'enum' && constants.length) {
-    constants.forEach((f, i) => {
-      const annotations = annotationsOf(f.attributes).map((a) => annotationText(a, pool, namer))
-      const text = [...annotations, displayName(f.name)].join(' ') + (i === constants.length - 1 ? ';' : ',')
+    for (let i = 0; i < constants.length && !out.full; i++) {
+      const f = constants[i]
+      const annotations = annotationsOf(f.attributes)
+      const before = annotations.length ? `${inlineAnnotations(annotations, pool, namer)} ` : ''
+      const text = before + displayName(f.name) + (i === constants.length - 1 ? ';' : ',')
       out.push(inner, text, { kind: 'field', owner: cls.name, index: cls.fields.indexOf(f) })
-    })
+    }
   }
   // A blank line goes between groups, never right after the opening brace.
   let blank = kind === 'enum' && constants.length > 0
   let printed = blank
 
-  cls.fields.forEach((f, index) => {
-    if (kind === 'enum' && f.access & ACC.ENUM) return
+  for (let index = 0; index < cls.fields.length && !out.full; index++) {
+    const f = cls.fields[index]
+    if (kind === 'enum' && f.access & ACC.ENUM) continue
     // A record's private fields come from its header.
-    if (kind === 'record' && !(f.access & ACC.STATIC) && recordFields.has(f.name)) return
+    if (kind === 'record' && !(f.access & ACC.STATIC) && recordFields.has(f.name)) continue
     if (blank) out.push(0, '')
     blank = false
     printed = true
     const t: OutlineTarget = { kind: 'field', owner: cls.name, index }
-    for (const a of annotationsOf(f.attributes)) out.push(inner, annotationText(a, pool, namer), t)
+    writeAnnotations(out, f.attributes, cls, namer, inner, c, t)
     const decl = fieldDeclaration(cls, f, namer, isInterface)
     out.push(inner, f.access & ACC.SYNTHETIC ? `// ${c.synthetic}: ${decl}` : decl, t)
-  })
+  }
 
   blank = printed
-  cls.methods.forEach((m, index) => {
+  for (let index = 0; index < cls.methods.length && !out.full; index++) {
+    const m = cls.methods[index]
     if (blank) out.push(0, '')
     blank = false
     printed = true
@@ -210,10 +251,10 @@ function writeClass(
     if (m.access & (ACC.SYNTHETIC | ACC.BRIDGE)) {
       const prefix = `// ${m.access & ACC.BRIDGE ? c.bridge : c.synthetic}: `
       out.push(inner, `${prefix}${decl}`, t, [name[0] + prefix.length, name[1] + prefix.length])
-      return
+      continue
     }
     // Annotations belong to the method but name another type: only the declaration links to the bytecode.
-    for (const a of annotationsOf(m.attributes)) out.push(inner, annotationText(a, pool, namer), t)
+    writeAnnotations(out, m.attributes, cls, namer, inner, c, t)
     // A Code attribute that cannot be read still means the method has a body.
     const code = m.attributes.find((a) => a.name === 'Code')
     const body = code?.error
@@ -222,7 +263,8 @@ function writeClass(
     if (m.name === '<clinit>') out.push(inner, `static ${body}`, t, name)
     else if (code) out.push(inner, `${decl} ${body}`, t, name)
     else out.push(inner, `${decl}${kind === 'annotation' ? annotationDefault(cls, m, namer) : ''};`, t, name)
-  })
+  }
+  if (out.full) return out.close(depth, target)
 
   // Member classes, then anonymous and local classes declared here.
   const innerAttr = findAttribute(cls.attributes, 'InnerClasses')
@@ -239,6 +281,7 @@ function writeClass(
     }
   }
   for (const [name, entry] of members) {
+    if (out.full) break
     if (printed) out.push(0, '')
     printed = true
     // A class already written above is not read again.
@@ -261,9 +304,10 @@ function writeClass(
       })
     }
   }
-  if (locals.size) {
+  if (locals.size && !out.full) {
     if (printed) out.push(0, '')
     for (const l of locals.values()) {
+      if (out.full) break
       // The local class's own file names the method it is declared in.
       const local = options.resolve?.(l.name)
       const enclosing = local && findAttribute(local.attributes, 'EnclosingMethod')
@@ -271,7 +315,7 @@ function writeClass(
       if (local && enclosing?.value.methodIndex) {
         const nt = local.pool.nameAndType(enclosing.value.methodIndex)
         const owner = cls.methods.find((m) => m.name === nt.name && m.descriptor === nt.descriptor)
-        const parts = owner && methodParts(cls, owner, namer)
+        const parts = owner && methodParts(cls, owner, namer, false)
         const method = parts ? `${parts.name}(${parts.paramTypes.join(', ')})` : displayName(nt.name)
         where = ` ${fill(c.declaredIn, { method })}`
       }
@@ -285,13 +329,29 @@ function writeClass(
     out.push(0, '')
     out.push(inner, `// ${fill(c.damaged, { reason: reasonOf(options, cls.error.code, cls.error.message) })}`)
   }
-  out.push(depth, '}', target)
+  out.close(depth, target)
 }
 
-function writeModule(out: Writer, cls: ClassFile, namer: Namer): void {
+/** A member's annotations, one a line; past `MAX_ANNOTATION_LINES` a comment counts the rest. */
+function writeAnnotations(
+  out: Writer,
+  attributes: AttributeInfo[],
+  cls: ClassFile,
+  namer: Namer,
+  depth: number,
+  c: OutlineComments,
+  target?: OutlineTarget
+): void {
+  const list = annotationsOf(attributes)
+  const shown = Math.min(list.length, MAX_ANNOTATION_LINES)
+  for (let i = 0; i < shown && !out.full; i++) out.push(depth, annotationText(list[i], cls.pool, namer), target)
+  if (list.length > shown) out.push(depth, `// ${fill(c.moreAnnotations, { n: list.length - shown })}`, target)
+}
+
+function writeModule(out: Writer, cls: ClassFile, namer: Namer, c: OutlineComments): void {
   const pool = cls.pool
   const attr = findAttribute(cls.attributes, 'Module')
-  for (const a of annotationsOf(cls.attributes)) out.push(0, annotationText(a, pool, namer))
+  writeAnnotations(out, cls.attributes, cls, namer, 0, c)
   if (!attr) {
     out.push(0, `module ${binaryName(cls.name)} {}`)
     return
@@ -305,6 +365,7 @@ function writeModule(out: Writer, cls: ClassFile, namer: Namer): void {
   const version = m.versionIndex ? ` // @${displayName(pool.str(m.versionIndex))}` : ''
   out.push(0, `${m.access & 0x0020 ? 'open ' : ''}module ${ref(m.nameIndex)} {${version}`)
   for (const r of m.requires) {
+    if (out.full) break
     const mods = [r.access & 0x0020 ? 'transitive' : '', r.access & 0x0040 ? 'static' : ''].filter(Boolean)
     const v = r.versionIndex ? ` // @${displayName(pool.str(r.versionIndex))}` : ''
     out.push(1, `requires ${[...mods, ref(r.index)].join(' ')};${v}`)
@@ -314,27 +375,33 @@ function writeModule(out: Writer, cls: ClassFile, namer: Namer): void {
     ['opens', m.opens]
   ] as const) {
     for (const e of list) {
-      const to = e.to.length ? ` to ${e.to.map(ref).join(', ')}` : ''
+      if (out.full) break
+      const to = e.to.length ? ` to ${joinWithin(e.to, ref)}` : ''
       out.push(1, `${word} ${ref(e.index)}${to};`)
     }
   }
-  for (const u of m.uses) out.push(1, `uses ${binaryName(pool.className(u))};`)
-  for (const p of m.provides) {
-    out.push(1, `provides ${binaryName(pool.className(p.index))} with ${p.with.map((w) => binaryName(pool.className(w))).join(', ')};`)
+  for (const u of m.uses) {
+    if (out.full) break
+    out.push(1, `uses ${binaryName(pool.className(u))};`)
   }
-  out.push(0, '}')
+  for (const p of m.provides) {
+    if (out.full) break
+    out.push(1, `provides ${binaryName(pool.className(p.index))} with ${joinWithin(p.with, (w) => binaryName(pool.className(w)))};`)
+  }
+  out.close(0)
 }
 
 /** The outline of `cls` as lines of Java, each tied to the member it declares. */
 export function buildOutline(cls: ClassFile, options: OutlineOptions = {}): Outline {
   const comments = options.comments ?? ENGLISH_COMMENTS
   const namer = makeNamer(cls, false, true)
-  const body = new Writer(namer.linkTargets)
+  const budget = new RowBudget(options.limit ?? MAX_LISTED_ROWS)
+  const body = new Writer(namer.linkTargets, budget, comments.cut)
   const kind = classKind(cls)
   const pkg = cls.name.includes('/') ? cls.name.slice(0, cls.name.lastIndexOf('/')) : ''
-  if (kind === 'module') writeModule(body, cls, namer)
+  if (kind === 'module') writeModule(body, cls, namer, comments)
   else if (kind === 'package') {
-    for (const a of annotationsOf(cls.attributes)) body.push(0, annotationText(a, cls.pool, namer))
+    writeAnnotations(body, cls.attributes, cls, namer, 0, comments)
   } else {
     // A member class opened on its own still shows as the top level of its outline.
     writeClass(body, cls, namer, 0, { ...options, comments }, new Set([cls.name]))
@@ -365,7 +432,7 @@ export function buildOutline(cls: ClassFile, options: OutlineOptions = {}): Outl
     head.push(0, '')
   }
   const lines = [...head.lines, ...body.lines]
-  return { lines, text: lines.map((l) => l.text).join('\n') + '\n' }
+  return { lines, text: lines.map((l) => l.text).join('\n') + '\n', cut: budget.cut }
 }
 
 /** Short Java text of one member, for the structure view. */

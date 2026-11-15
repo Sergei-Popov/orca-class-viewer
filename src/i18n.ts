@@ -60,8 +60,15 @@ const en = {
   damagedAttributesMore: '{n} more.',
   listingCutTitle: 'The listing is cut',
   listingCutText:
-    'The Bytecode tab lists at most {n} instructions and table rows. The code of the remaining methods ({m}) is left out; their declarations are still there.',
+    'The Bytecode tab lists at most {n} rows of code, tables and attributes, a long line taking several. Past them, code and attributes are left out and marked “not listed”; every method still has its line.',
   listingCutLine: 'not listed ({size}): the listing is full',
+  listingMoreEntries: '… {n} more not listed: the listing is full',
+  listingMoreAttributes: 'Attributes not listed ({n}): the listing is full',
+  outlineCutTitle: 'The outline is cut',
+  outlineCutText: 'The Outline writes at most {n} rows, a long line taking several, and stops there. The Bytecode and Structure tabs still show the rest.',
+  structureCutTitle: 'The structure is cut',
+  structureCutText: 'The Structure tab lists at most {n} rows at a time. Longer lists end with a count of what is left out.',
+  structureMore: '… {n} more not shown: the tab is full',
   trailingText: '{n} after the end of the class are not part of it.',
   hiddenText: 'Some names contain invisible or control characters, which obfuscators use. They are shown as escapes such as \\t or \\u200b.',
   tabErrorTitle: 'This view cannot be shown',
@@ -113,7 +120,7 @@ const en = {
   poolEmptySlot: 'second half of the long or double before it',
   poolMissing: 'not read: the file ends before it',
   poolMore: '… and {n} more',
-  poolCodeCut: 'Uses in code are searched in the first {n} instructions of the class only.',
+  poolCodeCut: 'Uses in code are searched only in the code the Bytecode tab lists, at most {n} rows.',
 
   secClass: 'Class',
   secFields: 'Fields',
@@ -281,8 +288,15 @@ const ru: Strings = {
   damagedAttributesMore: 'И ещё {n}.',
   listingCutTitle: 'Листинг сокращён',
   listingCutText:
-    'Вкладка «Байт-код» показывает не больше {n} инструкций и строк таблиц. Код остальных методов ({m}) не показан, их объявления остаются.',
+    'Вкладка «Байт-код» показывает не больше {n} строк кода, таблиц и атрибутов; длинная строка считается за несколько. Дальше код и атрибуты не показаны и помечены «не показан»; строка каждого метода остаётся.',
   listingCutLine: 'не показан ({size}): листинг заполнен',
+  listingMoreEntries: '… и ещё {n}: листинг заполнен',
+  listingMoreAttributes: 'Атрибуты не показаны ({n}): листинг заполнен',
+  outlineCutTitle: 'Объявления сокращены',
+  outlineCutText: 'Вкладка «Объявления» пишет не больше {n} строк, длинная строка считается за несколько, и на этом останавливается. Остальное видно во вкладках «Байт-код» и «Структура».',
+  structureCutTitle: 'Структура сокращена',
+  structureCutText: 'Вкладка «Структура» показывает не больше {n} строк за раз. Длинные списки заканчиваются числом того, что не показано.',
+  structureMore: '… и ещё {n}: вкладка заполнена',
   trailingText: '{n} после конца класса к нему не относятся.',
   hiddenText: 'В некоторых именах есть невидимые или управляющие символы — так делают обфускаторы. Они показаны экранированными, например \\t или \\u200b.',
   tabErrorTitle: 'Это представление не показать',
@@ -332,7 +346,7 @@ const ru: Strings = {
   poolEmptySlot: 'вторая половина предыдущего long или double',
   poolMissing: 'не прочитана: файл кончается раньше',
   poolMore: '… и ещё {n}',
-  poolCodeCut: 'Использование в коде ищется только в первых {n} инструкциях класса.',
+  poolCodeCut: 'Использование в коде ищется только в коде, который показывает вкладка «Байт-код», — не больше {n} строк.',
 
   secClass: 'Класс',
   secFields: 'Поля',
@@ -470,7 +484,9 @@ const ru: Strings = {
       clojure: 'Скомпилирован Clojure; показан так, как его видит JVM.'
     },
     damaged: 'Дальше файл повреждён: {reason}.',
-    damagedCode: 'скомпилированный код, повреждён: {reason}'
+    damagedCode: 'скомпилированный код, повреждён: {reason}',
+    moreAnnotations: 'ещё аннотаций: {n}',
+    cut: 'Дальше не показано: объявления заполнены.'
   }
 }
 

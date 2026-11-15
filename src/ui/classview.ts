@@ -2,6 +2,8 @@
 // obfuscated files, and four tabs — Outline, Bytecode, Structure and Constant pool — each built
 // the first time it is shown. A file that is not a class at all gets a message and its first bytes.
 
+import type { AttributeInfo } from '../classfile/attributes'
+import { MAX_STRUCTURE_ROWS } from '../classfile/budget'
 import { ClassFormatError } from '../classfile/bytes'
 import { type ClassFile, type DamagedAttribute, damagedAttributes, parseClass } from '../classfile/classfile'
 import { makeNamer, methodParts, sourceSimpleName } from '../classfile/declarations'
@@ -32,6 +34,8 @@ type TabName = 'outline' | 'bytecode' | 'structure' | 'pool'
 
 const TABS: TabName[] = ['outline', 'bytecode', 'structure', 'pool']
 const TAB_KEY = 'class-viewer.tab'
+/** A method's label in "Go to method…" keeps this many characters. */
+const MAX_LABEL = 200
 const ZIP = [0x50, 0x4b, 0x03, 0x04]
 
 const SEG_CLASS: Record<Seg['kind'], string | undefined> = {
@@ -274,7 +278,8 @@ export class ClassView {
         showPool: (i) => this.showPool(i),
         showMethod: (i) => this.showMethod(i),
         openClass: this.ctx.openClass,
-        hasClass: this.ctx.hasClass
+        hasClass: this.ctx.hasClass,
+        cut: () => this.notice('cv-info', 'info', t.structureCutTitle, fill(t.structureCutText, { n: MAX_STRUCTURE_ROWS.toLocaleString(this.env.locale) }))
       })
       return { el: h('div', { className: 'cv-pane' }, doc) }
     }
@@ -289,6 +294,7 @@ export class ClassView {
       comments: env.t.comments,
       reason: (code, message) => reasonFor(env, code, message)
     })
+    if (outline.cut) this.notice('cv-info', 'info', env.t.outlineCutTitle, fill(env.t.outlineCutText, { n: MAX_LISTED_ROWS.toLocaleString(env.locale) }))
     const state: JavaState = { comment: false }
     const { hasClass, openClass } = this.ctx
     return outline.lines.map((line) => {
@@ -312,12 +318,20 @@ export class ClassView {
   private listingLines(cls: ClassFile): ViewLine[] {
     const t = this.env.t
     const listing = classListing(cls)
+    const locale = this.env.locale
     let cut = 0
     const lines = listing.map((line): ViewLine => {
       if (line.cut !== undefined) {
         cut++
         const text = `  Code: ${fill(t.listingCutLine, { size: t.bytes(line.cut) })}`
         return { text, spans: [{ text: '  Code: ', cls: SEG_CLASS.key }, { text: text.slice(8), cls: SEG_CLASS.comment }] }
+      }
+      if (line.omitted) {
+        cut++
+        const indent = line.segs[0]?.text ?? ''
+        const n = line.omitted.count.toLocaleString(locale)
+        const text = indent + fill(line.omitted.of === 'entries' ? t.listingMoreEntries : t.listingMoreAttributes, { n })
+        return { text, spans: [{ text: indent }, { text: text.slice(indent.length), cls: SEG_CLASS.comment }] }
       }
       const spans: Span[] = []
       for (const seg of line.segs) {
@@ -333,10 +347,7 @@ export class ClassView {
       }
       return { text: line.segs.map((s) => s.text).join(''), spans, anchor: line.anchor }
     })
-    if (cut) {
-      const locale = this.env.locale
-      this.notice('cv-info', 'info', t.listingCutTitle, fill(t.listingCutText, { n: MAX_LISTED_ROWS.toLocaleString(locale), m: cut.toLocaleString(locale) }))
-    }
+    if (cut) this.notice('cv-info', 'info', t.listingCutTitle, fill(t.listingCutText, { n: MAX_LISTED_ROWS.toLocaleString(locale) }))
     return lines
   }
 
@@ -346,12 +357,13 @@ export class ClassView {
     cls.methods.forEach((m, k) => {
       let label: string
       try {
-        const parts = methodParts(cls, m, namer)
+        const parts = methodParts(cls, m, namer, false)
         label = `${parts.name}(${parts.paramTypes.join(', ')})`
       } catch {
         label = `${displayName(m.name)}${displayName(m.descriptor)}`
       }
-      this.methodSelect.append(h('option', { value: String(k) }, label))
+      // A name may be 65,535 characters long; an option shows a line's worth.
+      this.methodSelect.append(h('option', { value: String(k) }, label.length > MAX_LABEL ? `${label.slice(0, MAX_LABEL)}…` : label))
     })
     this.methodSelect.value = ''
   }
@@ -498,9 +510,25 @@ function damagedText(env: Env, cls: ClassFile, d: DamagedAttribute): string {
   return fill(t.damagedAttribute, { attribute: displayName(d.attribute.name), owner, reason: reasonFor(env, d.attribute.errorCode, d.attribute.error ?? '') })
 }
 
-function hasObfuscatedNames(cls: ClassFile): boolean {
-  if (hasHiddenCharacters(cls.name)) return true
-  for (const m of cls.fields) if (hasHiddenCharacters(m.name)) return true
-  for (const m of cls.methods) if (hasHiddenCharacters(m.name)) return true
+/**
+ * Whether a name the tabs show has hidden characters: the class's, its members' and record
+ * components', and the attributes' names, which an unknown attribute may choose freely.
+ */
+export function hasObfuscatedNames(cls: ClassFile): boolean {
+  const pool = cls.pool
+  const attributes = (list: readonly AttributeInfo[]): boolean => {
+    for (const a of list) {
+      if (hasHiddenCharacters(a.name)) return true
+      const v = a.value
+      if (v.kind === 'Code' && attributes(v.code.attributes)) return true
+      if (v.kind === 'Record') {
+        for (const c of v.components) if (hasHiddenCharacters(pool.str(c.nameIndex)) || attributes(c.attributes)) return true
+      }
+    }
+    return false
+  }
+  if (hasHiddenCharacters(cls.name) || attributes(cls.attributes)) return true
+  for (const m of cls.fields) if (hasHiddenCharacters(m.name) || attributes(m.attributes)) return true
+  for (const m of cls.methods) if (hasHiddenCharacters(m.name) || attributes(m.attributes)) return true
   return false
 }
