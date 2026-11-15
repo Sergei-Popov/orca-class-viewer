@@ -122,16 +122,20 @@ export class JarView {
       this.levels = []
       this.rows = []
       this.renderRows()
-      this.crumbs.replaceChildren()
-      this.summary.textContent = ''
+      this.crumbs.replaceChildren(h('span', { className: 'cv-crumb', 'aria-current': 'true' }, this.env.t[kind]))
+      this.summary.textContent = sizeText(this.env, bytes.length)
       if (error instanceof ZipError && error.code === 'not-zip') {
+        const t = this.env.t
         const head = Array.from(bytes.subarray(0, 4), (b) => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
-        this.showMessage(this.env.t.notZipTitle, fill(this.env.t.notZipText, { bytes: head || '—' }), hexDump(bytes, Math.min(256, bytes.length)))
+        const extra = head === 'CA FE BA BE' ? [t.notZipClass] : []
+        this.root.classList.add('cv-alone')
+        this.showMessage(t.notZipTitle, fill(t.notZipText, { bytes: head || '—' }), hexDump(bytes, Math.min(256, bytes.length)), extra)
       } else {
         throw error
       }
       return
     }
+    this.root.classList.remove('cv-alone')
     const level = this.newLevel(model, this.env.t[kind])
     // A reload after an outside write keeps what was open and selected.
     if (previous) {
@@ -721,13 +725,14 @@ export class JarView {
     } catch (error) {
       console.warn('[class-viewer] cannot open the archive inside', entry.path, error)
       this.clearDetail()
-      const message =
-        error instanceof ZipError && error.code === 'not-zip'
-          ? fill(t.notZipText, { bytes: '' }).replace(/\s*\S*$/, '')
-          : error instanceof ZipError && error.code === 'too-large'
-            ? fill(t.nestedTooBig, { size: sizeText(this.env, entry.size) })
-            : fill(t.entryDamaged, { reason: this.reason(error) })
-      this.detail.append(this.head(node, entry, []), h('div', { className: 'cv-center' }, svg(icon('warning')), h('h2', {}, t.notZipTitle), h('p', {}, message)))
+      const notZip = error instanceof ZipError && error.code === 'not-zip'
+      const message = notZip
+        ? t.nestedNotZip
+        : error instanceof ZipError && error.code === 'too-large'
+          ? fill(t.nestedTooBig, { size: sizeText(this.env, entry.size) })
+          : fill(t.entryDamaged, { reason: this.reason(error) })
+      const title = notZip ? t.notZipTitle : t.nestedErrorTitle
+      this.detail.append(this.head(node, entry, []), h('div', { className: 'cv-center' }, svg(icon('warning')), h('h2', {}, title), h('p', {}, message)))
     }
   }
 
@@ -773,6 +778,14 @@ export class JarView {
     const stats = h('div', { className: 'cv-stats' }, this.stat(m.classCount, t.classes), this.stat(packages, t.packages), this.stat(m.resourceCount, t.resources))
     if (m.nested.length) stats.append(this.stat(m.nested.length, t.archives))
     box.append(stats)
+
+    // An Android library keeps its compiled classes in classes.jar.
+    const inner = m.classCount ? undefined : level.byId.get('f:classes.jar')
+    if (inner) {
+      const b = h('button', { className: 'cv-btn', type: 'button' }, svg(icon('open')), fill(t.openClass, { name: inner.label }))
+      b.addEventListener('click', () => void this.openNested(inner))
+      box.append(h('p', {}, fill(t.classesInside, { name: inner.label })), h('div', {}, b))
+    }
 
     // Java versions of the classes, filled in as they are read.
     if (m.classCount) {
@@ -882,11 +895,11 @@ export class JarView {
     this.scanTimer = setTimeout(step, 0)
   }
 
-  private showMessage(title: string, text: string, hex?: string): void {
+  private showMessage(title: string, text: string, hex?: string, extra: string[] = []): void {
     this.clearDetail()
     this.classView = undefined
     this.notice.hidden = true
-    const box = h('div', { className: 'cv-center' }, svg(icon('warning')), h('h2', {}, title), h('p', {}, text))
+    const box = h('div', { className: 'cv-center' }, svg(icon('warning')), h('h2', {}, title), h('p', {}, text), ...extra.map((x) => h('p', {}, x)))
     if (hex) box.append(h('pre', { className: 'cv-hex' }, hex))
     this.detail.append(box)
   }

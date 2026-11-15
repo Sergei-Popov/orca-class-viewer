@@ -265,6 +265,9 @@ button, select, input { font: inherit; color: inherit; }
   .cv-split { cursor: default; padding: 0; pointer-events: none; }
   .cv-search input { width: 130px; }
 }
+.cv-alone > .cv-main { display: flex; }
+.cv-alone > .cv-main > .cv-detailpane { flex: 1; min-width: 0; }
+.cv-alone .cv-tree, .cv-alone .cv-split, .cv-alone .cv-bar .cv-square { display: none; }
 .cv-tree { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .cv-tree-bar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--border); }
 .cv-tree-bar .cv-search { flex: 1; min-width: 0; }

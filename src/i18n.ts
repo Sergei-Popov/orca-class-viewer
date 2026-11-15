@@ -27,7 +27,8 @@ const en = {
   notClassTitle: 'Not a class file',
   notClassText: 'A class file starts with CA FE BA BE; this one starts with {bytes}.',
   notClassZip: 'It starts like a ZIP archive, so it may be a jar under the wrong name.',
-  firstBytes: 'The first {n} bytes',
+  firstBytes: 'The first {n}',
+  unnamedClass: 'Unnamed class',
 
   tabOutline: 'Outline',
   tabBytecode: 'Bytecode',
@@ -186,6 +187,10 @@ const en = {
   nestedTooDeep: 'Archives nested this deep are not opened in place.',
   notZipTitle: 'Not a ZIP archive',
   notZipText: 'A jar is a ZIP file, but this one has no ZIP directory at its end. It starts with {bytes}.',
+  notZipClass: 'It starts like a class file, so it may be a class under the wrong name.',
+  classesInside: 'Its compiled classes are in {name}, an archive inside this one.',
+  nestedErrorTitle: 'Cannot open this archive',
+  nestedNotZip: 'It has an archive’s name but no ZIP directory at its end, so it cannot be opened as an archive.',
   zipDamaged: 'The archive’s directory ends early; it shows the entries that could be read.',
   classInJar: 'Class {name} from {archive}'
 }
@@ -206,6 +211,7 @@ const ru: Strings = {
   notClassText: 'Class-файл начинается с CA FE BA BE, а этот — с {bytes}.',
   notClassZip: 'Он начинается как ZIP-архив — возможно, это jar с неправильным именем.',
   firstBytes: 'Первые {n}',
+  unnamedClass: 'Класс без имени',
 
   tabOutline: 'Объявления',
   tabBytecode: 'Байт-код',
@@ -363,6 +369,10 @@ const ru: Strings = {
   nestedTooDeep: 'Архивы такой глубины вложенности здесь не открываются.',
   notZipTitle: 'Это не ZIP-архив',
   notZipText: 'Jar — это ZIP-файл, но в конце этого нет каталога ZIP. Он начинается с {bytes}.',
+  notZipClass: 'Он начинается как class-файл — возможно, это класс с неправильным именем.',
+  classesInside: 'Скомпилированные классы лежат в {name} — архиве внутри этого.',
+  nestedErrorTitle: 'Не удаётся открыть архив',
+  nestedNotZip: 'У него имя архива, но в конце нет каталога ZIP, поэтому открыть его как архив нельзя.',
   zipDamaged: 'Каталог архива обрывается; показаны записи, которые удалось прочитать.',
   classInJar: 'Класс {name} из {archive}',
 

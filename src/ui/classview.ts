@@ -384,7 +384,7 @@ export class ClassView {
 
   private renderHeader(cls: ClassFile, lang: LanguageInfo): void {
     const t = this.env.t
-    const full = cls.name ? displayName(binaryName(cls.name)) : '?'
+    const full = cls.name ? displayName(binaryName(cls.name)) : t.unnamedClass
     const dot = full.lastIndexOf('.')
     const title = h('h1', { title: full })
     if (dot > 0) title.append(h('span', { className: 'cv-pkg' }, full.slice(0, dot + 1)))

@@ -9,7 +9,7 @@ import type { LanguageInfo } from '../classfile/language'
 import { binaryName, displayName } from '../classfile/names'
 import { javaRelease } from '../classfile/versions'
 import { h } from './dom'
-import { type Env, fill, hexDump, reasonText, sizeText } from './env'
+import { type Env, fill, hexDump, sizeText } from './env'
 
 export type StructureActions = {
   showPool: (index: number) => void
@@ -120,16 +120,6 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
   const attrs = h('div', {})
   for (const a of cls.attributes) attrs.append(attributeBlock(a))
   section(t.secAttributes, cls.attributes.length, true, cls.attributes.length ? attrs : h('p', { className: 'cv-hint' }, t.none))
-
-  if (cls.error) {
-    doc.prepend(
-      h(
-        'div',
-        { className: 'cv-notice cv-bad', style: 'border:1px solid var(--border);border-radius:var(--radius);margin-bottom:10px' },
-        h('span', {}, h('strong', {}, t.damagedTitle), fill(t.damagedText, { offset: cls.error.offset.toLocaleString(env.locale), reason: reasonText(env, cls.error) }))
-      )
-    )
-  }
 
   doc.addEventListener('click', (event) => {
     const target = event.target instanceof Element ? event.target : null
