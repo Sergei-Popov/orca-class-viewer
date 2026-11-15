@@ -259,11 +259,64 @@ export function formatJavaNumber(value: number, single: boolean): string {
   return `${sign}${digits[0]}.${digits.slice(1) || '0'}E${exp}`
 }
 
-/** The shortest `d.ddde±x` that reads back as the same float. */
+const pow10 = (k: number) => 10n ** BigInt(k)
+
+/**
+ * Float.toString's digits as `d.ddde±x`, in exact arithmetic: of the decimals with the fewest
+ * digits that read back as the float, the one closest to it, ties to an even last digit. When
+ * one digit is enough, the closest decimal of one or two digits. The decimals that read back
+ * lie halfway to the neighbouring floats, the halves included when the significand is even;
+ * below a power of two the neighbour is half as far.
+ */
 function shortestFloat(abs: number): string {
-  for (let p = 1; p <= 9; p++) {
-    const s = abs.toExponential(p - 1)
-    if (Math.fround(Number(s)) === abs) return s
+  const view = new DataView(new ArrayBuffer(4))
+  view.setFloat32(0, abs)
+  const bits = view.getUint32(0)
+  const biased = (bits >>> 23) & 0xff
+  const fraction = bits & 0x7fffff
+  const significand = biased ? fraction | 0x800000 : fraction
+  // Values in units of 2^q: the float, and the bounds of what reads back as it.
+  const q = (biased || 1) - 152
+  const value = 4n * BigInt(significand)
+  const upper = value + 2n
+  const lower = value - (fraction === 0 && biased > 1 ? 1n : 2n)
+  const inclusive = significand % 2 === 0
+  const num = q >= 0 ? 2n ** BigInt(q) : 1n
+  const den = q < 0 ? 2n ** BigInt(-q) : 1n
+  /** `units` × 2^q / 10^k as a fraction. */
+  const over = (units: bigint, k: number): [bigint, bigint] => (k >= 0 ? [units * num, den * pow10(k)] : [units * num * pow10(-k), den])
+  const fits = (d: bigint, k: number) => {
+    const [ln, ld] = over(lower, k)
+    const [un, ud] = over(upper, k)
+    const above = d * ld - ln
+    const below = un - d * ud
+    return inclusive ? above >= 0n && below >= 0n : above > 0n && below > 0n
+  }
+  /** The n-digit decimals d × 10^k on either side of the float that read back as it. */
+  const around = (n: number) => {
+    let k = Math.floor(Math.log10(abs)) - n + 1
+    let low = 0n
+    for (let step = 0; step < 4; step++) {
+      const [xn, xd] = over(value, k)
+      low = xn / xd
+      if (low >= pow10(n)) k++
+      else if (low < pow10(n - 1)) k--
+      else break
+    }
+    return { k, low, fit: [low, low + 1n].filter((d) => fits(d, k)) }
+  }
+  for (let n = 1; n <= 9; n++) {
+    if (!around(n).fit.length) continue
+    const { k, low, fit } = n === 1 ? around(2) : around(n)
+    let d = fit[0]
+    if (fit.length === 2) {
+      // Closer to low when 2x < (2·low + 1)·10^k.
+      const [xn, xd] = over(value, k)
+      const c = 2n * xn - (2n * low + 1n) * xd
+      d = c < 0n ? low : c > 0n ? low + 1n : low % 2n === 0n ? low : low + 1n
+    }
+    const s = d.toString()
+    return `${s[0]}.${s.slice(1)}e${k + s.length - 1}`
   }
   return abs.toExponential(8)
 }

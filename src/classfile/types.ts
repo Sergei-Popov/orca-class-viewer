@@ -41,7 +41,7 @@ export class SignatureError extends Error {
 }
 
 /** Type arguments nest at most this deep; javac and kotlinc never come close, and the printers
- *  recurse once per level. */
+ *  recurse once per level (array dimensions are counted in loops). */
 export const MAX_TYPE_NESTING = 64
 
 class Parser {
@@ -287,8 +287,16 @@ export class Namer {
         return t.name
       case 'var':
         return displayName(t.name)
-      case 'array':
-        return `${this.type(t.of)}[]`
+      case 'array': {
+        // Up to 255 dimensions per level: counted in a loop, so they do not add to the recursion.
+        let dims = 0
+        let of: JType = t
+        while (of.kind === 'array') {
+          dims++
+          of = of.of
+        }
+        return this.type(of) + '[]'.repeat(dims)
+      }
       case 'class': {
         let out = ''
         for (const [i, part] of t.parts.entries()) {

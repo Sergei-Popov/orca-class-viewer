@@ -1,8 +1,12 @@
 import { assert, test } from 'orca/testing'
 import { ClassWriter, asm, s4, u2 } from '../testing/classwriter'
-import { parseClass } from '../classfile/classfile'
+import { MAX_CODE_LENGTH } from '../classfile/attributes'
+import { damagedAttributes, parseClass } from '../classfile/classfile'
+import { poolUsage } from '../classfile/usage'
+import { stringsFor } from '../i18n'
+import { useSiteText } from '../ui/pooltable'
 import { branchTargets, disassemble } from './disasm'
-import { classListing, cpComment, methodListing } from './listing'
+import { MAX_LISTED_ROWS, classListing, cpComment, localNames, methodListing } from './listing'
 import { OP, OPCODES } from './opcodes'
 
 const text = (lines: { segs: { text: string }[] }[]) => lines.map((l) => l.segs.map((s) => s.text).join('')).join('\n')
@@ -223,4 +227,132 @@ test('lists a damaged Code attribute with its error', () => {
   w.method({ access: 1, name: 'answer', descriptor: '()I', attributes: [{ name: 'Code', body: [0, 1, 0, 1, 0, 0, 3, 232, 0xac, 0, 0, 0, 0] }] })
   const listing = text(classListing(parseClass(w.toBytes())))
   assert.match(listing, /^ {2}Code: 13 bytes — the file ends inside the bytecode$/m)
+})
+
+/** A Code attribute body as the class file stores it, with any code_length. */
+function codeBody(code: number[], length = code.length): number[] {
+  return [...u2(1), ...u2(1), (length >>> 24) & 255, (length >>> 16) & 255, (length >>> 8) & 255, length & 255, ...code, ...u2(0), ...u2(0)]
+}
+
+// Review 2, finding 1: code_length is 1 to 65535 (JVMS 4.7.3); a crafted 20 MB method froze the tab.
+test('takes a Code attribute with code_length past 65535 or of 0 as damaged', () => {
+  for (const length of [65536, 70000, 0]) {
+    const w = new ClassWriter({ name: 'demo/Long' })
+    const code = [...new Array(Math.max(length - 1, 0)).fill(0), ...(length ? [0xb1] : [])]
+    w.method({ access: 9, name: 'big', descriptor: '()V', attributes: [{ name: 'Code', body: codeBody(code) }] })
+    const cls = parseClass(w.toBytes())
+    const [damaged] = damagedAttributes(cls)
+    assert.equal(damaged?.attribute.name, 'Code', String(length))
+    assert.equal(damaged?.attribute.errorCode, 'malformed')
+    assert.equal(damaged?.attribute.error, `code_length is ${length}, where the JVM allows 1 to 65535`)
+    const listing = classListing(cls)
+    assert.ok(listing.length < 10, `${listing.length} lines`)
+    assert.match(text(listing), new RegExp(`^ {2}Code: ${length + 12} bytes — code_length is ${length}`, 'm'))
+  }
+  // The longest the JVM takes is still listed.
+  const w = new ClassWriter({ name: 'demo/Longest' })
+  w.method({ access: 9, name: 'big', descriptor: '()V', attributes: [{ name: 'Code', body: codeBody([...new Array(65534).fill(0), 0xb1]) }] })
+  const cls = parseClass(w.toBytes())
+  assert.equal(damagedAttributes(cls).length, 0)
+  assert.equal(MAX_CODE_LENGTH, 65535)
+  assert.ok(classListing(cls).length > 65535)
+})
+
+/** A class of `methods` static methods, each `size` bytes of nop and a return. */
+function fullMethods(methods: number, size: number) {
+  const w = new ClassWriter({ name: 'demo/Full' })
+  const code = [...new Array(size - 1).fill(0), 0xb1]
+  for (let k = 0; k < methods; k++) w.method({ access: 9, name: `m${k}`, descriptor: '()V', attributes: [w.code({ code })] })
+  return parseClass(w.toBytes())
+}
+
+// Review 2, finding 1: 300 methods of 64 KB list 20 million lines; past 1M rows code is left out.
+test('stops listing code past a million rows and marks the methods left out', () => {
+  const cls = fullMethods(3, 10)
+  const listing = classListing(cls, 15)
+  // m0 takes 10 rows; m1 would take 20 of 15, so m1 and m2 are cut.
+  const cut = listing.filter((l) => l.cut !== undefined)
+  assert.deepEqual(
+    cut.map((l) => [l.method, l.cut]),
+    [
+      [1, 10],
+      [2, 10]
+    ]
+  )
+  // Their declarations stay, so "Go to method" still finds them.
+  for (const m of [0, 1, 2]) assert.ok(listing.some((l) => l.anchor === `m${m}`), `m${m}`)
+  assert.ok(listing.some((l) => l.anchor === 'm0@9'))
+  assert.ok(!listing.some((l) => l.anchor?.startsWith('m1@')))
+  assert.equal(MAX_LISTED_ROWS, 1_000_000)
+  // Table rows count too: a short method with a huge LineNumberTable.
+  const w = new ClassWriter({ name: 'demo/Lines' })
+  const lines: number[] = [...u2(40)]
+  for (let i = 0; i < 40; i++) lines.push(...u2(0), ...u2(i))
+  w.method({ access: 9, name: 'm', descriptor: '()V', attributes: [w.code({ code: asm('return'), attributes: [{ name: 'LineNumberTable', body: lines }] })] })
+  assert.equal(classListing(parseClass(w.toBytes()), 30).filter((l) => l.cut !== undefined).length, 1)
+  // At the real limit: 15 full methods fit, the 16th and 17th do not.
+  const big = classListing(fullMethods(17, 65535))
+  assert.ok(big.length < MAX_LISTED_ROWS + 1000, `${big.length} lines`)
+  assert.deepEqual(
+    big.filter((l) => l.cut !== undefined).map((l) => l.method),
+    [15, 16]
+  )
+})
+
+// Review 2, finding 1: the Constant pool's uses search the same number of instructions.
+test('searches uses in code within the instruction limit', () => {
+  const cls = fullMethods(3, 10)
+  assert.equal(poolUsage(cls, 15).codeCut, true)
+  assert.equal(poolUsage(cls).codeCut, undefined)
+})
+
+// Review 2, finding 7: one LocalVariableTable scan per instruction was quadratic.
+test('looks local variable names up in an index of the LocalVariableTable', () => {
+  const w = new ClassWriter({ name: 'demo/Locals' })
+  const name = w.pool.utf8('x')
+  const desc = w.pool.utf8('I')
+  // 32,767 × iload 5 and 65,535 table entries for other slots.
+  const code = [...new Array(32767).fill(0).flatMap(() => asm('iload', 5)), ...asm('return')]
+  const vars: number[] = [...u2(65535)]
+  for (let i = 0; i < 65535; i++) vars.push(...u2(0), ...u2(65535), ...u2(name), ...u2(desc), ...u2(6 + (i % 1000)))
+  w.method({ access: 9, name: 'm', descriptor: '()V', attributes: [w.code({ code, attributes: [{ name: 'LocalVariableTable', body: vars }] })] })
+  const cls = parseClass(w.toBytes())
+  const started = Date.now()
+  classListing(cls)
+  const took = Date.now() - started
+  assert.ok(took < 1000, `${took} ms`)
+  // The lookup finds what a scan of the table finds: a store names the variable starting after it.
+  const pool = cls.pool
+  const v = (start: number, length: number, slot: number) => ({ start, length, slot, nameIndex: name })
+  const at = localNames(pool, [v(10, 5, 1), v(0, 30, 2), v(12, 3, 2)])
+  assert.equal(at(1, 6), 'x')
+  assert.equal(at(1, 5), undefined)
+  assert.equal(at(1, 14), 'x')
+  assert.equal(at(1, 15), undefined)
+  assert.equal(at(3, 0), undefined)
+  // Overlapping ranges: the table's first one wins, as before.
+  const a = w.pool.utf8('a')
+  const b = w.pool.utf8('b')
+  const pick = localNames(parseClass(w.toBytes()).pool, [
+    { start: 10, length: 20, slot: 1, nameIndex: b },
+    { start: 0, length: 40, slot: 1, nameIndex: a }
+  ])
+  assert.equal(pick(1, 12), 'b')
+  assert.equal(pick(1, 35), 'a')
+  assert.equal(localNames(pool, undefined)(1, 0), undefined)
+})
+
+// Review 2, finding 10: an unknown attribute may be named with a bidi mark and a newline.
+test('escapes unknown attribute names in the listing and the pool uses', () => {
+  const w = new ClassWriter({ name: 'demo/Odd' })
+  // Built from char codes, so this source holds no right-to-left mark itself.
+  const rlo = String.fromCharCode(0x202e)
+  const odd = `Note${rlo}txt.exe\nsecond line`
+  w.method({ access: 9, name: 'm', descriptor: '()V', attributes: [{ name: odd, body: [1, 2, 3] }] })
+  const cls = parseClass(w.toBytes())
+  const listing = text(classListing(cls))
+  assert.match(listing, /^ {2}Note\\u202etxt\.exe\\nsecond line: 3 bytes$/m)
+  assert.ok(!listing.includes(rlo))
+  const site = poolUsage(cls)[w.pool.utf8(odd)].sites[0]
+  assert.equal(useSiteText(stringsFor('en'), site), 'method m · Note\\u202etxt.exe\\nsecond line · attribute name')
 })

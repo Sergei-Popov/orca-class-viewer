@@ -196,6 +196,133 @@ test('reads the manifest that java.util.jar reads', () => {
   assert.equal(buildJar(openZip(zip([{ name: 'meta-inf/manifest.mf', data: man('Low') }]))).manifest?.main.get('Main-Class'), 'Low')
 })
 
+// Review 2, finding 14. What JarFile.getManifest() of Java 21.0.13 read from jars of these names,
+// each entry with Main-Class m<index> (checked on the PC with eclipse-temurin:21-jdk): the last
+// name that matches in ASCII capitals, the exact one included; ſ and ı are not ASCII. `java -jar`
+// starts a jar only when some entry has the exact name, and then runs JarFile's choice: with
+// MANIFEST.MF (A) then manifest.mf (B) it ran B; with manifest.mf alone, or Manifest.MF and
+// MANIFEST.mf, it said "Invalid or corrupt jarfile".
+test('matches the manifest name in ASCII capitals only and takes the last match, as Java 21', () => {
+  const cases: [string[], string | undefined, boolean][] = [
+    [['META-INF/MANIFEST.MF', 'META-INF/manifest.mf'], 'm1', true],
+    [['META-INF/manifest.mf', 'META-INF/MANIFEST.MF'], 'm1', true],
+    [['META-INF/Manifest.MF', 'META-INF/MANIFEST.mf'], 'm1', false],
+    [['META-INF/manifest.mf'], 'm0', false],
+    [['meta-inf/manifest.mf'], 'm0', false],
+    [['META-INF/MANIFEST.MF'], 'm0', true],
+    [['META-INF/MANIFEST.MF', 'META-INF/MANIFEſT.MF'], 'm0', true],
+    [['META-ıNF/MANIFEST.MF'], undefined, false],
+    [['META-ıNF/MANIFEST.MF', 'META-INF/manifest.mf'], 'm1', false]
+  ]
+  for (const [names, expected, exact] of cases) {
+    const items = names.map((name, i) => ({ name, data: `Manifest-Version: 1.0\r\nMain-Class: m${i}\r\n\r\n` }))
+    const model = buildJar(openZip(zip(items)))
+    assert.equal(model.manifest?.main.get('Main-Class'), expected, names.join(' + '))
+    assert.equal(model.manifestExact, exact, `exact: ${names.join(' + ')}`)
+  }
+})
+
+// Review 2, finding 2: java.util.zip finds `demo/Main.class/` under `demo/Main.class` when no entry
+// has that exact name, and `java -jar` runs it (JDK 8 and 21); with the exact name beside it, the
+// file wins in either order.
+test('lists an entry named like a folder that holds data, and takes its class as the JVM does', () => {
+  const main = 'Manifest-Version: 1.0\r\nMain-Class: demo.Main\r\n\r\n'
+  const slash = { name: 'demo/Main.class/', data: helloClass('demo/Main').toBytes() }
+  const only = buildJar(openZip(zip([{ name: 'META-INF/MANIFEST.MF', data: main }, slash])))
+  assert.deepEqual(
+    only.folderData.map((e) => e.name),
+    ['demo/Main.class/']
+  )
+  const apart = only.tree.find((n) => n.id === UNUSUAL_ID)
+  assert.deepEqual(
+    apart?.children.map((n) => [n.label, n.kind, n.issue]),
+    [['demo/Main.class/', 'class', 'folder']]
+  )
+  assert.equal(findClass(only, 'demo/Main')?.entry.name, 'demo/Main.class/')
+  assert.equal(only.classCount, 1)
+  assert.ok(![...walk(only.tree)].some((n) => n.kind === 'folder' && n.label === 'Main.class'))
+  // A decoy under BOOT-INF/classes: a plain `java -jar` runs the folder-named entry.
+  const decoy = buildJar(openZip(zip([{ name: 'META-INF/MANIFEST.MF', data: main }, cls('BOOT-INF/classes/demo/Main'), slash])))
+  assert.equal(findClass(decoy, 'demo/Main')?.entry.name, 'demo/Main.class/')
+  // Beside the exact name the file wins; the data is still listed apart.
+  for (const items of [[cls('demo/Main'), slash], [slash, cls('demo/Main')]]) {
+    const both = buildJar(openZip(zip(items)))
+    assert.deepEqual(
+      both.classes.get('demo/Main')?.map((r) => r.entry.name),
+      ['demo/Main.class']
+    )
+    assert.deepEqual(
+      both.folderData.map((e) => e.name),
+      ['demo/Main.class/']
+    )
+  }
+  // An empty folder entry is still a folder.
+  assert.equal(buildJar(openZip(zip([{ name: 'demo/' }, cls('demo/Main')]))).folderData.length, 0)
+})
+
+// Review 2, finding 13: JarFile looks up META-INF/versions/<release>/, so 09 or 017 is never used.
+test('takes only the version folders java.util.jar looks up', () => {
+  const mr = 'Manifest-Version: 1.0\r\nMulti-Release: true\r\n\r\n'
+  const model = buildJar(
+    openZip(
+      zip([
+        { name: 'META-INF/MANIFEST.MF', data: mr },
+        cls('demo/Main'),
+        cls('META-INF/versions/09/demo/Main'),
+        cls('META-INF/versions/017/demo/Main'),
+        cls('META-INF/versions/8/demo/Main'),
+        cls('META-INF/versions/11/demo/Main'),
+        { name: 'META-INF/versions/09/module-info.class', data: moduleInfo('padded') }
+      ])
+    )
+  )
+  assert.deepEqual(model.versions, [11])
+  assert.deepEqual(
+    findClass(model, 'demo/Main')?.node.versions?.map((v) => [v.release, v.entry.name]),
+    [[11, 'META-INF/versions/11/demo/Main.class']]
+  )
+  assert.equal(model.moduleInfo, undefined)
+  // The others stay ordinary files under META-INF.
+  for (const v of ['09', '017', '8']) assert.ok([...walk(model.tree)].some((n) => n.path === `META-INF/versions/${v}/demo/Main.class`), v)
+})
+
+// Review 2, finding 5: each `$` of a name cost a lookup of the prefix before it, so names of
+// thousands of `$` took seconds.
+test('nests classes under their outer classes quickly, even for names of thousands of $', () => {
+  const items: ZipItem[] = []
+  for (let j = 0; j < 100; j++) items.push({ name: `p/${'$'.repeat(16000)}${j}.class`, data: 'x', method: 0 })
+  items.push(cls('p/A'), cls('p/A$B'), cls('p/A$B$C'))
+  const bytes = zip(items)
+  const started = Date.now()
+  const model = buildJar(openZip(bytes))
+  const took = Date.now() - started
+  assert.ok(took < 1500, `${took} ms`)
+  assert.equal(model.classCount, 103)
+  assert.deepEqual(
+    findClass(model, 'p/A$B')?.node.children.map((n) => n.className),
+    ['p/A$B$C']
+  )
+  assert.deepEqual(
+    findClass(model, 'p/A')?.node.children.map((n) => n.className),
+    ['p/A$B']
+  )
+})
+
+// Review 2, finding 4: a jmod keeps module-info.class under classes/.
+test('names the module of a jmod', () => {
+  const bytes = zip([{ name: 'classes/module-info.class', data: moduleInfo('demo.api') }, cls('classes/demo/api/Api')], { prefix: Uint8Array.from([0x4a, 0x4d, 1, 0]) })
+  const model = buildJar(openZip(bytes), 'jmod')
+  const info = model.moduleInfo
+  assert.equal(info?.nodeId, 'c:classes/module-info')
+  assert.equal(info?.release, undefined)
+  assert.ok([...walk(model.tree)].some((n) => n.id === info?.nodeId && n.entry === info.entry))
+  const parsed = info ? new ClassCache(model.zip).get('module', info.entry) : undefined
+  const attr = parsed?.attributes.find((a) => a.value.kind === 'Module')
+  assert.equal(attr?.value.kind === 'Module' ? parsed?.pool.text(attr.value.module.nameIndex) : undefined, 'demo.api')
+  // In a plain jar, classes/ is only a folder.
+  assert.equal(buildJar(openZip(zip([{ name: 'classes/module-info.class', data: moduleInfo('x') }]))).moduleInfo, undefined)
+})
+
 /** A module-info class with a Module attribute for `name`. */
 function moduleInfo(name: string): Uint8Array {
   const w = new ClassWriter({ name: 'module-info', superName: null, access: 0x8000 })

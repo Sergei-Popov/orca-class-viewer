@@ -19,8 +19,11 @@ export type NodeKind = 'root' | 'package' | 'class' | 'folder' | 'file' | 'archi
 
 export type ClassVersion = { release: number; entry: ZipEntry }
 
-/** Why an entry is listed apart: a name the JVM would not look up, or a copy a later one replaces. */
-export type EntryIssue = 'unusual' | 'shadowed'
+/**
+ * Why an entry is listed apart: a name the JVM would not look up, a copy a later one replaces, or
+ * a name ending in `/` that holds data (the JVM finds it under the name without the slash).
+ */
+export type EntryIssue = 'unusual' | 'shadowed' | 'folder'
 
 export type JarNode = {
   /** Unique within the jar. */
@@ -56,6 +59,12 @@ export type JarModel = {
   resourceCount: number
   manifest?: Manifest
   manifestEntry?: ZipEntry
+  /**
+   * Some entry is named exactly META-INF/MANIFEST.MF. `java -jar` (Java 21) refuses a jar without
+   * one ("Invalid or corrupt jarfile"); with one, it runs the Main-Class of `manifestEntry`, which
+   * may be a later copy in other capitals.
+   */
+  manifestExact: boolean
   /** Releases with a META-INF/versions/N folder. */
   versions: number[]
   multiRelease: boolean
@@ -68,13 +77,37 @@ export type JarModel = {
   unusual: ZipEntry[]
   /** Earlier copies of a name; the JVM, like the tree, uses the last one. */
   shadowed: ZipEntry[]
+  /** Entries named like folders that hold data. When no entry has the name without the slash,
+   *  the JVM reads such an entry under it, and a class there is listed in `classes`. */
+  folderData: ZipEntry[]
 }
 
 /** Roots whose classes are not at the top of the archive. */
 const CLASS_ROOTS = ['WEB-INF/classes/', 'BOOT-INF/classes/']
 const NESTED = /\.(jar|war|ear|aar|jmod|zip)$/i
-const MANIFEST = 'META-INF/MANIFEST.MF'
+export const MANIFEST = 'META-INF/MANIFEST.MF'
 const VERSIONED = /^META-INF\/versions\/(\d{1,4})\/(.+)$/
+/** Outer classes are looked for among this many `$` from the right, in names of up to this length:
+ *  a name of thousands of `$` would otherwise cost a lookup of a long prefix per `$`. */
+const MAX_NESTING_TRIES = 32
+const MAX_OUTER_NAME = 1024
+
+/**
+ * A META-INF/versions/N/ copy as java.util.jar.JarFile finds it: it looks up the folder named by
+ * the release number itself, so `09` or `017` is never used, and releases before 9 are not either.
+ */
+export function versionOf(path: string): { release: number; rest: string } | undefined {
+  const v = VERSIONED.exec(path)
+  if (!v) return undefined
+  const release = Number(v[1])
+  return String(release) === v[1] && release >= 9 ? { release, rest: v[2] } : undefined
+}
+
+/** A name compared as java.util.zip compares META-INF names: ASCII letters in any case, nothing else. */
+const asciiUpper = (name: string) => name.replace(/[a-z]+/g, (s) => s.toUpperCase())
+
+/** True for the name java.util.jar takes for the manifest when the exact one is missing. */
+export const isManifestName = (name: string): boolean => name.length === MANIFEST.length && asciiUpper(name) === MANIFEST
 /** Folders deeper than this are joined into one, so every walk over the tree stays shallow. */
 export const MAX_FOLDER_DEPTH = 128
 export const UNUSUAL_ID = 'u:'
@@ -154,10 +187,15 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
   for (const entry of zip.entries) byName.set(entry.name, entry)
   const unusual: ZipEntry[] = []
   const shadowed: ZipEntry[] = []
+  const folderData: ZipEntry[] = []
   const top = newDir('')
   for (const entry of zip.entries) {
     if (byName.get(entry.name) !== entry) {
       if (!entry.dir) shadowed.push(entry)
+      continue
+    }
+    if (!entry.dir && entry.name.endsWith('/')) {
+      folderData.push(entry)
       continue
     }
     if (!isCanonical(entry)) {
@@ -204,7 +242,8 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
     const out: JarNode[] = []
     for (const [simple, node] of bySimple) {
       let parent: JarNode | undefined
-      for (let i = simple.lastIndexOf('$'); i > 0; i = simple.lastIndexOf('$', i - 1)) {
+      let tries = 0
+      for (let i = simple.lastIndexOf('$', MAX_OUTER_NAME); i > 0 && tries < MAX_NESTING_TRIES; i = simple.lastIndexOf('$', i - 1), tries++) {
         parent = bySimple.get(simple.slice(0, i))
         if (parent) {
           const rest = simple.slice(i + 1)
@@ -263,8 +302,8 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
     for (const f of d.files) {
       const leaf = f.path.slice(f.path.lastIndexOf('/') + 1)
       if (leaf.endsWith('.class')) {
-        const v = VERSIONED.exec(f.path)
-        const name = v ? v[2].slice(0, -'.class'.length) : f.path.slice(0, -'.class'.length)
+        const v = versionOf(f.path)
+        const name = (v ? v.rest : f.path).slice(0, -'.class'.length)
         children.push({ id: `c:${f.path}`, kind: 'class', label: leaf.slice(0, -'.class'.length), path: f.path, entry: f, className: name, classCount: 1, children: [] })
       } else {
         children.push(fileNode(f, leaf))
@@ -302,23 +341,42 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
   sortNodes(tree)
 
   // Entries listed apart, in archive order, under their stored names.
-  if (unusual.length || shadowed.length) {
-    const apart = [...unusual.map((e) => [e, 'unusual'] as const), ...shadowed.map((e) => [e, 'shadowed'] as const)].sort((a, b) => a[0].index - b[0].index)
+  const apartNodes = new Map<ZipEntry, JarNode>()
+  if (unusual.length || shadowed.length || folderData.length) {
+    const apart = [
+      ...unusual.map((e) => [e, 'unusual'] as const),
+      ...shadowed.map((e) => [e, 'shadowed'] as const),
+      ...folderData.map((e) => [e, 'folder'] as const)
+    ].sort((a, b) => a[0].index - b[0].index)
     const children: JarNode[] = apart.map(([entry, issue]) => {
       const isClass = entry.path.endsWith('.class')
       const kind: NodeKind = isClass ? 'class' : NESTED.test(entry.path) ? 'archive' : 'file'
-      const className = isClass ? (VERSIONED.exec(entry.path)?.[2] ?? entry.path).slice(0, -'.class'.length) : undefined
-      return { id: `x:${entry.index}`, kind, label: entry.name, path: entry.name, entry, className, classCount: isClass ? 1 : 0, children: [], issue }
+      const className = isClass ? (versionOf(entry.path)?.rest ?? entry.path).slice(0, -'.class'.length) : undefined
+      const node: JarNode = { id: `x:${entry.index}`, kind, label: entry.name, path: entry.name, entry, className, classCount: isClass ? 1 : 0, children: [], issue }
+      apartNodes.set(entry, node)
+      return node
     })
     tree.push({ id: UNUSUAL_ID, kind: 'folder', label: 'Unusual entries', path: '', classCount: 0, children, issue: 'unusual' })
   }
+  // java.util.zip finds `a/B.class/` under `a/B.class` when no entry has that exact name, so a
+  // class loader reads it: such a class is the class of that name, though it is listed apart.
+  for (const entry of folderData) {
+    const path = entry.name.slice(0, -1)
+    if (path !== entry.path || byName.has(path) || !path.endsWith('.class') || path.startsWith('META-INF/')) continue
+    const root = roots.find((r) => path.startsWith(r)) ?? (kind === 'jmod' ? undefined : '')
+    const node = apartNodes.get(entry)
+    if (root !== undefined && node) addClass(path.slice(root.length, -'.class'.length), entry, root, node)
+  }
 
   let manifest: Manifest | undefined
-  // As java.util.jar.JarFile: the exact name first, then any META-INF entry that matches it in capitals.
-  let manifestEntry = byName.get(MANIFEST)
-  if (!manifestEntry || manifestEntry.dir) {
-    const other = zip.entries.find((e) => !e.dir && e.name.toUpperCase() === MANIFEST)
-    manifestEntry = other ? byName.get(other.name) : undefined
+  // As java.util.jar.JarFile in Java 21: the last entry whose name is META-INF/MANIFEST.MF in any
+  // case of its ASCII letters (ZipFile.Source.isMetaName and isManifestName), the exact name included.
+  let manifestEntry: ZipEntry | undefined
+  let manifestExact = false
+  for (const e of zip.entries) {
+    if (!isManifestName(e.name)) continue
+    manifestEntry = e
+    if (e.name === MANIFEST) manifestExact = true
   }
   if (manifestEntry && manifestEntry.size < 4 * 1024 * 1024) {
     try {
@@ -332,15 +390,16 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
   // META-INF/versions/N/… classes are listed on the class they replace.
   const versionSet = new Set<number>()
   let moduleInfo: ModuleInfo | undefined
-  const topModule = classes.get('module-info')?.find((r) => r.root === '')
+  // A jmod keeps its classes, module-info.class included, under classes/.
+  const topModule = classes.get('module-info')?.find((r) => r.root === (kind === 'jmod' ? 'classes/' : ''))
   if (topModule) moduleInfo = { entry: topModule.entry, nodeId: topModule.node.id }
   for (const entry of zip.entries) {
-    const v = VERSIONED.exec(entry.path)
+    const v = versionOf(entry.path)
     if (!v || byName.get(entry.name) !== entry || !isCanonical(entry)) continue
-    const release = Number(v[1])
+    const release = v.release
     versionSet.add(release)
-    if (!v[2].endsWith('.class')) continue
-    const name = v[2].slice(0, -'.class'.length)
+    if (!v.rest.endsWith('.class')) continue
+    const name = v.rest.slice(0, -'.class'.length)
     const base = classes.get(name)?.find((r) => r.root === '')
     if (base) (base.node.versions ??= []).push({ release, entry })
     // Libraries that still run on Java 8 keep their module descriptor under versions/9.
@@ -361,20 +420,26 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
     resourceCount,
     manifest,
     manifestEntry,
+    manifestExact,
     versions: [...versionSet].sort((a, b) => a - b),
     multiRelease,
     nested,
     moduleInfo,
     unusual,
-    shadowed
+    shadowed,
+    folderData
   }
 }
 
-/** The class that `name` names, preferring the same root as `from`. */
+/**
+ * The class that `name` names, preferring the same root as `from`; without `from`, the top of
+ * the archive, where `java -jar` and a class path look.
+ */
 export function findClass(model: JarModel, name: string, from?: ClassRef): ClassRef | undefined {
   const list = model.classes.get(name)
   if (!list) return undefined
-  return list.find((r) => r.root === from?.root) ?? list[0]
+  const root = from ? from.root : ''
+  return list.find((r) => r.root === root) ?? list[0]
 }
 
 /** Every node in the tree, depth first, parents before children. */

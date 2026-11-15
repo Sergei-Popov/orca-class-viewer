@@ -1,7 +1,7 @@
 // The Outline: a class as Java source with declarations only. Method bodies stay compiled code;
 // this is not a decompiler. Member classes from the same archive nest inside their outer class.
 
-import { findAttribute } from './attributes'
+import { type InnerClassEntry, findAttribute } from './attributes'
 import type { FormatErrorCode } from './bytes'
 import type { ClassFile, Member } from './classfile'
 import {
@@ -14,6 +14,7 @@ import {
   fieldType,
   makeNamer,
   methodDeclaration,
+  methodDeclarationAt,
   methodParts,
   ownInnerEntry,
   sourceSimpleName
@@ -31,7 +32,13 @@ export type OutlineTarget =
 /** A class name in a line, `text.slice(from, to)`, that names `name`. */
 export type OutlineLink = { from: number; to: number; name: string }
 
-export type OutlineLine = { text: string; target?: OutlineTarget; links?: OutlineLink[] }
+export type OutlineLine = {
+  text: string
+  target?: OutlineTarget
+  links?: OutlineLink[]
+  /** On a method's declaration line: where its name is, `text.slice(from, to)`. */
+  name?: { from: number; to: number }
+}
 
 export type Outline = { lines: OutlineLine[]; text: string }
 
@@ -112,12 +119,17 @@ class Writer {
   constructor(targets: readonly string[]) {
     this.targets = targets
   }
-  push(depth: number, text: string, target?: OutlineTarget): void {
+  /** `name` is `[from, to)` of the declared name in `text`, before its link marks are taken out. */
+  push(depth: number, text: string, target?: OutlineTarget, name?: [number, number]): void {
     const indent = INDENT.repeat(depth)
     const taken = takeLinks(text, this.targets)
     const line: OutlineLine = { text: indent + taken.text }
     if (target) line.target = target
     if (taken.links.length) line.links = taken.links.map((l) => ({ from: l.from + indent.length, to: l.to + indent.length, name: l.name }))
+    if (name && name[1] > name[0]) {
+      const from = indent.length + takeLinks(text.slice(0, name[0]), this.targets).text.length
+      line.name = { from, to: from + name[1] - name[0] }
+    }
     this.lines.push(line)
   }
 }
@@ -194,49 +206,54 @@ function writeClass(
     blank = false
     printed = true
     const t: OutlineTarget = { kind: 'method', owner: cls.name, index }
+    const { text: decl, name } = methodDeclarationAt(cls, m, namer)
     if (m.access & (ACC.SYNTHETIC | ACC.BRIDGE)) {
-      const label = m.access & ACC.BRIDGE ? c.bridge : c.synthetic
-      out.push(inner, `// ${label}: ${methodDeclaration(cls, m, namer)}`, t)
+      const prefix = `// ${m.access & ACC.BRIDGE ? c.bridge : c.synthetic}: `
+      out.push(inner, `${prefix}${decl}`, t, [name[0] + prefix.length, name[1] + prefix.length])
       return
     }
+    // Annotations belong to the method but name another type: only the declaration links to the bytecode.
     for (const a of annotationsOf(m.attributes)) out.push(inner, annotationText(a, pool, namer), t)
-    const decl = methodDeclaration(cls, m, namer)
     // A Code attribute that cannot be read still means the method has a body.
     const code = m.attributes.find((a) => a.name === 'Code')
     const body = code?.error
       ? `{ /* ${fill(c.damagedCode, { reason: reasonOf(options, code.errorCode, code.error) })} */ }`
       : bodyComment(m, c)
-    if (m.name === '<clinit>') out.push(inner, `static ${body}`, t)
-    else if (code) out.push(inner, `${decl} ${body}`, t)
-    else out.push(inner, `${decl}${kind === 'annotation' ? annotationDefault(cls, m, namer) : ''};`, t)
+    if (m.name === '<clinit>') out.push(inner, `static ${body}`, t, name)
+    else if (code) out.push(inner, `${decl} ${body}`, t, name)
+    else out.push(inner, `${decl}${kind === 'annotation' ? annotationDefault(cls, m, namer) : ''};`, t, name)
   })
 
   // Member classes, then anonymous and local classes declared here.
   const innerAttr = findAttribute(cls.attributes, 'InnerClasses')
-  const members: string[] = []
-  const locals: { name: string; anonymous: boolean }[] = []
+  // Each class once, by its first entry: a crafted table may name one class thousands of times.
+  const members = new Map<string, InnerClassEntry>()
+  const locals = new Map<string, { name: string; anonymous: boolean }>()
   for (const e of innerAttr?.value.classes ?? []) {
     const name = pool.className(e.inner)
     if (name === cls.name) continue
-    if (e.outer && pool.className(e.outer) === cls.name) members.push(name)
-    else if (!e.outer && name.startsWith(`${cls.name}$`)) locals.push({ name, anonymous: !e.nameIndex })
+    if (e.outer && pool.className(e.outer) === cls.name) {
+      if (!members.has(name)) members.set(name, e)
+    } else if (!e.outer && name.startsWith(`${cls.name}$`) && !locals.has(name)) {
+      locals.set(name, { name, anonymous: !e.nameIndex })
+    }
   }
-  for (const name of members) {
+  for (const [name, entry] of members) {
     if (printed) out.push(0, '')
     printed = true
-    const nested = options.resolve?.(name)
-    if (nested && !nested.error && depth < MAX_NESTING && !seen.has(name)) {
+    // A class already written above is not read again.
+    const nested = depth < MAX_NESTING && !seen.has(name) ? options.resolve?.(name) : undefined
+    if (nested && !nested.error) {
       seen.add(name)
       writeClass(out, nested, namer, inner, options, seen)
     } else {
-      const entry = innerAttr?.value.classes.find((e) => pool.className(e.inner) === name)
-      const flags = entry?.access ?? 0
+      const flags = entry.access
       const keyword =
         flags & ACC.ANNOTATION ? '@interface' : flags & ACC.INTERFACE ? 'interface' : flags & ACC.ENUM ? 'enum' : 'class'
       const modifiers = javaModifiers(flags, 'inner').filter(
         (m) => keyword === 'class' || (m !== 'static' && m !== 'abstract' && (keyword !== 'enum' || m !== 'final'))
       )
-      const simple = entry?.nameIndex ? pool.str(entry.nameIndex) : name
+      const simple = entry.nameIndex ? pool.str(entry.nameIndex) : name
       const file = `${name.slice(name.lastIndexOf('/') + 1)}.class`
       out.push(inner, `${[...modifiers, keyword, namer.link(name, displayName(simple))].join(' ')} { /* ${fill(c.elsewhere, { file: displayName(file) })} */ }`, {
         kind: 'class',
@@ -244,9 +261,9 @@ function writeClass(
       })
     }
   }
-  if (locals.length) {
+  if (locals.size) {
     if (printed) out.push(0, '')
-    for (const l of locals) {
+    for (const l of locals.values()) {
       // The local class's own file names the method it is declared in.
       const local = options.resolve?.(l.name)
       const enclosing = local && findAttribute(local.attributes, 'EnclosingMethod')

@@ -1,4 +1,7 @@
 import { assert, test } from 'orca/testing'
+import { ClassWriter } from '../testing/classwriter'
+import { parseClass } from './classfile'
+import { buildOutline } from './outline'
 import { binaryName, displayName, hasHiddenCharacters, javaChar, javaString, simpleName, stringText } from './names'
 import { MAX_TYPE_NESTING, Namer, SignatureError, parameterSlots, parseClassSignature, parseFieldType, parseMethodType, takeLinks } from './types'
 
@@ -118,6 +121,21 @@ test('caps generic nesting so a deep signature falls back to the descriptor', ()
     assert.throws(() => parseMethodType(`(${deep(d)})V`), (e) => e instanceof SignatureError)
     assert.throws(() => parseClassSignature(`Ljava/lang/Object;${deep(d)}`), (e) => e instanceof SignatureError)
   }
+})
+
+// Review 2, finding 6: each level may also carry 255 array dimensions, and the printer recursed
+// once per dimension: a 4 KB Signature overflowed it from 16 levels.
+test('prints array dimensions in a loop, at every level of a deep signature', () => {
+  const sig = (d: number) => `${`La<${'['.repeat(255)}`.repeat(d)}I${'>;'.repeat(d)}`
+  const text = new Namer().type(parseFieldType(sig(MAX_TYPE_NESTING)))
+  assert.ok(text.startsWith(`a<a<`))
+  assert.equal(text.split('[]').length - 1, 255 * MAX_TYPE_NESTING)
+  // The Outline of a class with such a field, and of the field's text.
+  const w = new ClassWriter({ name: 'demo/Deep' })
+  w.field({ access: 2, name: 'f', descriptor: 'Ljava/lang/Object;', attributes: [w.indexAttr('Signature', w.pool.utf8(sig(MAX_TYPE_NESTING)))] })
+  const outline = buildOutline(parseClass(w.toBytes())).text
+  assert.ok(outline.includes(`private a<a<`))
+  assert.ok(outline.includes(`${'[]'.repeat(255)}> f;`))
 })
 
 // Review 1, finding 6: a namer made with links marks every class name it prints.

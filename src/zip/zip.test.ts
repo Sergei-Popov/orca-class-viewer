@@ -201,3 +201,155 @@ test('normalizes entry paths', () => {
   assert.equal(normalizePath('../../etc/x'), 'etc/x')
   assert.equal(normalizePath('a/b/../c'), 'a/c')
 })
+
+/** An archive laid out by hand: stored entries, then directories and end records in any order. */
+class Layout {
+  readonly b: number[] = []
+  get at() {
+    return this.b.length
+  }
+  u16(v: number) {
+    this.b.push(v & 255, (v >>> 8) & 255)
+    return this
+  }
+  u32(v: number) {
+    return this.u16(v & 0xffff).u16(v >>> 16)
+  }
+  u64(v: number) {
+    return this.u32(v % 0x100000000).u32(Math.floor(v / 0x100000000))
+  }
+  raw(data: ArrayLike<number>) {
+    for (let i = 0; i < data.length; i++) this.b.push(data[i])
+    return this
+  }
+  /** A stored entry's local record; returns its offset. */
+  local(name: string, data: string): number {
+    const at = this.at
+    const n = utf8(name)
+    const d = utf8(data)
+    this.u32(0x04034b50).u16(10).u16(0x800).u16(0).u16(0).u16(0).u32(crc32(d)).u32(d.length).u32(d.length).u16(n.length).u16(0).raw(n).raw(d)
+    return at
+  }
+  /** A central record; `extra` ends it. Returns its offset. */
+  central(name: string, data: string, offset: number, extra: number[] = []): number {
+    const at = this.at
+    const n = utf8(name)
+    const d = utf8(data)
+    this.u32(0x02014b50).u16(20).u16(10).u16(0x800).u16(0).u16(0).u16(0).u32(crc32(d)).u32(d.length).u32(d.length)
+    this.u16(n.length).u16(extra.length).u16(0).u16(0).u16(0).u32(0).u32(offset).raw(n).raw(extra)
+    return at
+  }
+  /** An end record; returns its offset. */
+  end(total: number, size: number, offset: number, commentLength = 0): number {
+    const at = this.at
+    this.u32(0x06054b50).u16(0).u16(0).u16(total).u16(total).u32(size).u32(offset).u16(commentLength)
+    return at
+  }
+  bytes() {
+    return Uint8Array.from(this.b)
+  }
+}
+
+/** A ZIP64 end record and its locator, inside an extra field of 4 + 76 bytes. */
+function zip64Extra(at: number, total: number, size: number, offset: number, end64At: (extraStart: number) => number): number[] {
+  const x = new Layout()
+  x.u16(0xcafe).u16(76)
+  const end64 = at + 4
+  x.u32(0x06064b50).u64(44).u16(45).u16(45).u32(0).u32(0).u64(total).u64(total).u64(size).u64(offset)
+  x.u32(0x07064b50).u32(0).u64(end64At(end64)).u32(1)
+  return x.b
+}
+
+const read = (bytes: Uint8Array) => {
+  const z = openZip(bytes)
+  return { z, texts: z.entries.map((e) => new TextDecoder().decode(z.read(e).bytes)) }
+}
+
+// Review 2, finding 3: the end record and ZIP64 record java.util.zip takes, as ZipFile.Source.findEND.
+test('reads the directory java.util.zip reads when there are two end records', () => {
+  // An exact end record leads to a decoy; inside its comment, a nearer one that checks out leads
+  // to the real directory. java.util.zip takes the nearer one.
+  const l = new Layout()
+  const real = l.local('Main.class', 'REAL')
+  const decoy = l.local('Main.class', 'DECOY')
+  const cenA = l.central('Main.class', 'DECOY', decoy)
+  const endA = l.end(1, l.at - cenA, cenA)
+  const commentStart = l.at
+  const cenB = l.central('Main.class', 'REAL', real)
+  l.end(1, l.at - cenB, cenB)
+  l.raw([0, 0, 0])
+  const bytes = l.bytes()
+  const comment = bytes.length - commentStart
+  bytes[endA + 20] = comment & 255
+  bytes[endA + 21] = comment >>> 8
+  const { z, texts } = read(bytes)
+  assert.deepEqual(texts, ['REAL'])
+  assert.equal(z.ambiguous, true)
+  assert.equal(z.damaged, false)
+})
+
+test('passes over an end record whose directory does not check out', () => {
+  // No exact end record: the nearest one points at a decoy directory but no directory sits
+  // before it, so java.util.zip takes the earlier one.
+  const l = new Layout()
+  const real = l.local('Main.class', 'REAL')
+  const decoy = l.local('Main.class', 'DECOY')
+  const cenDecoy = l.central('Main.class', 'DECOY', decoy)
+  const cenReal = l.central('Main.class', 'REAL', real)
+  l.end(1, l.at - cenReal, cenReal)
+  l.end(1, cenReal - cenDecoy, cenDecoy)
+  l.raw([1, 2, 3, 4, 5])
+  const { z, texts } = read(l.bytes())
+  assert.deepEqual(texts, ['REAL'])
+  assert.equal(z.ambiguous, true)
+})
+
+test('uses a ZIP64 record only when it agrees with the end record', () => {
+  for (const shape of ['disagrees', 'locator off'] as const) {
+    // The real directory's last record carries a ZIP64 end record and locator in its extra
+    // field, right before the end record; the ZIP64 values point at a decoy directory.
+    const l = new Layout()
+    const real = l.local('Main.class', 'REAL')
+    const decoy = l.local('Main.class', 'DECOY')
+    const cenDecoy = l.central('Main.class', 'DECOY', decoy)
+    const decoySize = l.at - cenDecoy
+    const cenReal = l.at
+    const extraAt = cenReal + 46 + 'Main.class'.length
+    const extra = zip64Extra(extraAt, 1, decoySize, cenDecoy, (end64) => (shape === 'disagrees' ? end64 : 0))
+    l.central('Main.class', 'REAL', real, extra)
+    l.end(1, l.at - cenReal, cenReal)
+    const { z, texts } = read(l.bytes())
+    assert.deepEqual(texts, ['REAL'], shape)
+    assert.equal(z.ambiguous, true, shape)
+    assert.equal(z.damaged, false, shape)
+  }
+  // A ZIP64 archive as tools write it: the end record says "see ZIP64".
+  const z64 = openZip(zip([{ name: 'a.txt', data: 'alpha' }], { zip64End: true }))
+  assert.equal(z64.entries.length, 1)
+  assert.equal(z64.ambiguous, false)
+})
+
+test('an end record whose directory size is wrong is damaged, as java.util.zip refuses it', () => {
+  const bytes = zip([{ name: 'a.txt', data: 'alpha' }, { name: 'b.txt', data: 'beta' }])
+  const end = bytes.length - 22
+  bytes[end + 12] += 1
+  const z = openZip(bytes)
+  assert.equal(z.damaged, true)
+  assert.deepEqual(z.entries.map((e) => e.name), ['a.txt', 'b.txt'])
+  const plain = openZip(zip([{ name: 'a.txt', data: 'alpha' }], { comment: `PK${String.fromCharCode(5, 6)} in a comment` }))
+  assert.equal(plain.damaged, false)
+  assert.equal(plain.entries.length, 1)
+})
+
+// Review 2, finding 2: a folder holds nothing; a name ending in "/" with data is a file to the JVM.
+test('takes an entry named like a folder that holds data for a file', () => {
+  const z = openZip(zip([{ name: 'demo/' }, { name: 'demo/Main.class/', data: 'DATA', method: 0 }, { name: 'empty/', data: '', method: 8 }]))
+  assert.deepEqual(
+    z.entries.map((e) => [e.name, e.dir]),
+    [
+      ['demo/', true],
+      ['demo/Main.class/', false],
+      ['empty/', true]
+    ]
+  )
+})

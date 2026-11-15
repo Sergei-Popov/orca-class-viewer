@@ -156,6 +156,41 @@ test('formats subnormal floats and doubles like Float.toString and Double.toStri
   assert.equal(javaFloat(float(1)), '1.4E-45F')
 })
 
+// Review 2, finding 11. Float.toString(Float.intBitsToFloat(bits)) printed by Java 21.0.13
+// (eclipse-temurin:21-jdk): the reported values, edges, every ninth power of two, and 30 exact
+// ties that Java rounds to an even digit. The same code matched 52,983 patterns from that JDK.
+const JAVA_21_FLOATS = `
+43053400 133.20312 40034000 2.0507812 39800000 2.4414062E-4 4a000001 2097152.2 0f800000 1.2621775E-29
+6b000000 1.5474251E26 6c800000 1.2379401E27 c270e800 -60.226562 3e020000 0.12695312 45fb0e40 8033.7812
+00000001 1.4E-45 00000002 2.8E-45 007fffff 1.1754942E-38 00800000 1.1754944E-38 7f7fffff 3.4028235E38
+3f800000 1.0 3dcccccd 0.1 4b189680 1.0E7 4b18967f 9999999.0 3a83126f 0.001 3a83126e 9.999999E-4
+7f000000 1.7014118E38 00400000 5.877472E-39 05000000 6.018531E-36 09800000 3.081488E-33
+0e000000 1.5777218E-30 12800000 8.077936E-28 17000000 4.135903E-25 1b800000 2.1175824E-22
+20000000 1.0842022E-19 24800000 5.551115E-17 29000000 2.842171E-14 2d800000 1.4551915E-11
+32000000 7.450581E-9 36800000 3.8146973E-6 3b000000 0.001953125 44000000 512.0 48800000 262144.0
+4d000000 1.3421773E8 51800000 6.871948E10 56000000 3.5184372E13 5a800000 1.8014399E16
+5f000000 9.223372E18 63800000 4.7223665E21 68000000 2.4178516E24 71000000 6.338253E29
+75800000 3.2451855E32 7a000000 1.661535E35 7e800000 8.507059E37 40fb2000 7.8476562
+40c0a000 6.0195312 40eca000 7.3945312 3f928000 1.1445312 40594000 3.3945312 40064000 2.0976562
+40ed2000 7.4101562 40f42000 7.6289062 3f9e8000 1.2382812 4083a000 4.1132812 403c4000 2.9414062
+4082a000 4.0820312 3fde8000 1.7382812 3fcc8000 1.5976562 40a7a000 5.2382812 40cb2000 6.3476562
+40d92000 6.7851562 3efd0000 0.49414062 40584000 3.3789062 404e4000 3.2226562 3e620000 0.22070312
+4095a000 4.6757812 40b0a000 5.5195312 40872000 4.2226562 3fee8000 1.8632812 409a2000 4.8164062
+40f52000 7.6601562 406f4000 3.7382812 3fb28000 1.3945312 3ef90000 0.48632812`
+
+test('formats floats like Float.toString: ties to even, shorter decimals above powers of two', () => {
+  const words = JAVA_21_FLOATS.trim().split(/\s+/)
+  assert.equal(words.length, 79 * 2)
+  const view = new DataView(new ArrayBuffer(4))
+  for (let i = 0; i < words.length; i += 2) {
+    view.setUint32(0, parseInt(words[i], 16))
+    assert.equal(formatJavaNumber(view.getFloat32(0), true), words[i + 1], words[i])
+  }
+  // The same digits reach javap's text and the Outline.
+  view.setUint32(0, 0x3e020000)
+  assert.equal(javaFloat(view.getFloat32(0)), '0.12695312F')
+})
+
 // Review 1, finding 13: a Code attribute that cannot be read leaves the class readable.
 test('finds a damaged Code attribute though the class reads to its end', () => {
   const w = helloClass('demo/Broken')
