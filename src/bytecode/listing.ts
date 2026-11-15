@@ -37,6 +37,12 @@ export type ListingLine = {
 
 const s = (text: string, kind: SegKind = 'plain', ref?: number): Seg => (ref === undefined ? { text, kind } : { text, kind, ref })
 
+/** A jump target right-aligned in `width` columns; only the number is the link. */
+const jumpAt = (target: number, width: number): Seg[] => {
+  const text = String(target)
+  return [s(' '.repeat(Math.max(0, width - text.length))), s(text, 'jump', target)]
+}
+
 const TYPE_LABELS: Record<number, string> = {
   1: 'Utf8',
   3: 'int',
@@ -269,9 +275,9 @@ export function methodListing(cls: ClassFile, index: number): ListingLine[] {
       line(s('       from    to  target type', 'comment'))
       for (const e of c.exceptions) {
         line(
-          s(`${String(e.start).padStart(10)}`, 'jump', e.start),
+          ...jumpAt(e.start, 10),
           s(`${String(e.end).padStart(6)}`, 'num'),
-          s(`${String(e.handler).padStart(6)}`, 'jump', e.handler),
+          ...jumpAt(e.handler, 6),
           s('   '),
           e.catchType ? s(`Class ${displayName(pool.className(e.catchType))}`, 'cp', e.catchType) : s('any')
         )
@@ -287,7 +293,7 @@ export function methodListing(cls: ClassFile, index: number): ListingLine[] {
         line(s('      Start  Length  Slot  Name   Signature', 'comment'))
         for (const x of v.variables) {
           line(
-            s(`${String(x.start).padStart(11)}`, 'jump', x.start),
+            ...jumpAt(x.start, 11),
             s(`${String(x.length).padStart(8)}${String(x.slot).padStart(6)}  `, 'num'),
             s(pad(displayName(pool.str(x.nameIndex)), 6)),
             s(` ${displayName(pool.str(x.descriptorIndex))}`)

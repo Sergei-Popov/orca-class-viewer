@@ -1,32 +1,45 @@
 {
   "$schema": "https://raw.githubusercontent.com/stablyai/orca/main/docs/schemas/plugins/orca-plugin.v2.schema.json",
   "manifestVersion": 2,
+  "execution": "sandboxed-ui",
   "id": "class-viewer",
   "name": "Class File Viewer",
   "version": "0.1.0",
-  "description": "Compiled JVM .class files in Orca's editor tabs: decompiled source, bytecode and the constant pool, plus .jar files browsed class by class. Offline, no JDK needed.",
+  "description": "Read compiled JVM .class files in Orca's editor tabs: an outline of the declarations in Java syntax, bytecode listed like javap, the class file's structure and a cross-linked constant pool. .jar, .war, .ear, .aar and .jmod files open as a tree of packages and classes. Offline, no JDK needed. Independent; not affiliated with Oracle.",
+  "author": {
+    "name": "Sergei Popov",
+    "url": "https://github.com/Sergei-Popov"
+  },
+  "repository": "https://github.com/Sergei-Popov/orca-class-viewer",
+  "license": "MIT",
+  "icon": "images/icon.png",
   "engines": {
     "orca": ">=1.4.248"
   },
-  "execution": "sandboxed-ui",
   "pluginApi": 1,
   "contributes": {
     "customEditors": [
       {
-        "id": "class-viewer",
+        "id": "class",
         "title": "Class File Viewer",
-        "extensions": [
-          ".class-viewer"
-        ],
-        "entry": "editor/main.ts",
+        "icon": "icons/class.png",
+        "extensions": [".class", ".jmod"],
+        "entry": "src/editor.ts",
+        "priority": "default",
+        "contentKind": "bytes",
+        "frame": "isolated"
+      },
+      {
+        "id": "jar",
+        "title": "Class File Viewer",
+        "icon": "icons/jar.png",
+        "extensions": [".jar", ".war", ".ear", ".aar"],
+        "entry": "src/editor.ts",
+        "priority": "option",
+        "contentKind": "bytes",
         "frame": "isolated"
       }
     ]
   },
-  "author": {
-    "name": "Сергей Попов",
-    "url": "https://github.com/Sergei-Popov"
-  },
-  "repository": "https://github.com/Sergei-Popov/orca-class-viewer",
-  "license": "MIT"
+  "capabilities": []
 }
