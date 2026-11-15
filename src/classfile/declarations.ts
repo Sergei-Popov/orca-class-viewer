@@ -242,6 +242,7 @@ export function methodParts(cls: ClassFile, method: Member, namer: Namer): Metho
   const paramAnnotations = method.attributes
     .filter((a) => a.value.kind === 'ParameterAnnotations')
     .map((a) => (a.value.kind === 'ParameterAnnotations' ? a.value.parameters : []))
+  const mp = findAttribute(method.attributes, 'MethodParameters')
   const varargs = (method.access & ACC.VARARGS) !== 0
   const paramTypes = shape.params.map((t, i) =>
     varargs && i === shape.params.length - 1 && t.kind === 'array' ? `${namer.type(t.of)}...` : namer.type(t)
@@ -254,7 +255,8 @@ export function methodParts(cls: ClassFile, method: Member, namer: Namer): Metho
       for (const a of list[at] ?? []) annotations.push(annotationText(a, pool, namer))
     }
     const pname = names[skip + i]
-    return [...annotations, type, pname !== undefined ? displayName(pname) : `arg${i}`].join(' ')
+    const isFinal = ((mp?.value.parameters[skip + i]?.access ?? 0) & ACC.FINAL) !== 0
+    return [...annotations, ...(isFinal ? ['final'] : []), type, pname !== undefined ? displayName(pname) : `arg${i}`].join(' ')
   })
   let throws = shape.throws.map((t) => namer.type(t))
   if (!throws.length) {
