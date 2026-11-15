@@ -2,7 +2,7 @@
 // uses. Index 0 is unused, and a Long or Double takes two slots.
 
 import { ClassFormatError, type Reader, decodeModifiedUtf8 } from './bytes'
-import { binaryName, displayName, javaString } from './names'
+import { binaryName, displayName, javaString, stringText } from './names'
 
 export const Tag = {
   Utf8: 1,
@@ -136,7 +136,8 @@ export class ConstantPool {
 
   /**
    * The resolved value in javap's style: `java/lang/Object."<init>":()V`, `String hello`,
-   * `int 42`. Names keep their JVM form with hidden characters escaped.
+   * `int 42`. Names keep their JVM form with hidden characters escaped; Utf8 text is escaped
+   * like javap does it, so spaces stay spaces and a newline reads `\n`.
    */
   text(index: number, depth = 0): string {
     const e = this.get(index)
@@ -144,7 +145,7 @@ export class ConstantPool {
     if (depth > 4) return '…'
     switch (e.tag) {
       case 1:
-        return displayName(e.value)
+        return stringText(e.value)
       case 3:
         return String(e.value)
       case 4:
@@ -232,31 +233,39 @@ export function javaDouble(value: number): string {
   return formatJavaNumber(value, false)
 }
 
-/** Java's `Float.toString`/`Double.toString` shape: always a fraction, `E` exponents. */
+/**
+ * Java's `Float.toString`/`Double.toString` (JDK 19 and later): the shortest decimal that reads
+ * back as the same value, but never fewer than two digits, so `Double.MIN_VALUE` is `4.9E-324`
+ * rather than `5.0E-324`. Plain notation from 10⁻³ up to 10⁷, `E` exponents outside it.
+ */
 export function formatJavaNumber(value: number, single: boolean): string {
   if (Number.isNaN(value)) return 'NaN'
   if (!Number.isFinite(value)) return value > 0 ? 'Infinity' : '-Infinity'
   if (value === 0) return Object.is(value, -0) ? '-0.0' : '0.0'
-  // Shortest digits that round-trip at the value's own precision.
-  let digits = single ? shortestFloat(value) : String(value)
   const abs = Math.abs(value)
+  // `d.ddde±x`: the shortest digits that round-trip at the value's own precision.
+  let shortest = single ? shortestFloat(abs) : abs.toExponential()
+  // One digit is not enough for Java: it takes the two-digit decimal closest to the value.
+  if (!shortest.includes('.')) shortest = abs.toExponential(1)
+  const [mantissa, exponent] = shortest.split('e')
+  const digits = mantissa.replace('.', '').replace(/0+$/, '') || '0'
+  const exp = Number(exponent)
+  const sign = value < 0 ? '-' : ''
   if (abs >= 1e-3 && abs < 1e7) {
-    if (digits.includes('e')) digits = abs.toFixed(20).replace(/0+$/, '')
-    if (!digits.includes('.')) digits += '.0'
-    if (digits.endsWith('.')) digits += '0'
-    return value < 0 && !digits.startsWith('-') ? `-${digits}` : digits
+    if (exp < 0) return `${sign}0.${'0'.repeat(-exp - 1)}${digits}`
+    const whole = digits.slice(0, exp + 1).padEnd(exp + 1, '0')
+    return `${sign}${whole}.${digits.slice(exp + 1) || '0'}`
   }
-  const [mantissa, exponent] = Number(digits).toExponential().split('e')
-  const m = mantissa.includes('.') ? mantissa : `${mantissa}.0`
-  return `${m}E${Number(exponent)}`
+  return `${sign}${digits[0]}.${digits.slice(1) || '0'}E${exp}`
 }
 
-function shortestFloat(value: number): string {
+/** The shortest `d.ddde±x` that reads back as the same float. */
+function shortestFloat(abs: number): string {
   for (let p = 1; p <= 9; p++) {
-    const s = value.toPrecision(p)
-    if (Math.fround(Number(s)) === value) return String(Number(s))
+    const s = abs.toExponential(p - 1)
+    if (Math.fround(Number(s)) === abs) return s
   }
-  return String(value)
+  return abs.toExponential(8)
 }
 
 /** Reads `constant_pool_count` and the entries. A truncated pool keeps the entries before the

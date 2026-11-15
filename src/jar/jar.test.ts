@@ -1,8 +1,10 @@
 import { assert, test } from 'orca/testing'
-import { anonymousName, helloClass } from '../testing/classwriter'
+import { parseClass } from '../classfile/classfile'
+import { ClassWriter, anonymousName, helloClass, u2 } from '../testing/classwriter'
 import { type ZipItem, zip } from '../testing/zipwriter'
 import { openZip } from '../zip/zip'
-import { type JarNode, buildJar, findClass, jarKind, walk } from './jar'
+import { ClassCache } from './cache'
+import { type JarModel, type JarNode, MAX_FOLDER_DEPTH, UNUSUAL_ID, buildJar, findClass, jarKind, walk } from './jar'
 import { parseManifest } from './manifest'
 
 const cls = (name: string): ZipItem => ({ name: `${name}.class`, data: helloClass(name.replace(/^.*?classes\//, '')).toBytes() })
@@ -147,4 +149,125 @@ test('an empty or damaged archive still builds', () => {
   const model = buildJar(openZip(zip([{ name: 'META-INF/MANIFEST.MF', data: 'x', crc: 1 }, cls('a/B')])))
   assert.equal(model.manifest, undefined)
   assert.equal(model.classCount, 1)
+})
+
+// Review 1, findings 1 and 12: java.util.zip looks entries up by their stored names, and the last
+// copy of a name wins. The tree shows what the JVM loads; the rest is listed apart.
+test('takes the last copy of a name, as the JVM does, and lists the others apart', () => {
+  const decoy = helloClass('demo/Decoy').toBytes()
+  const real = helloClass('demo/Main').toBytes()
+  const loaded = (model: JarModel) => {
+    const ref = findClass(model, 'demo/Main')
+    return ref ? parseClass(model.zip.read(ref.entry).bytes).name : undefined
+  }
+  for (const name of ['demo/Main.class', 'x/../demo/Main.class', 'demo\\Main.class', '/demo/Main.class', './demo/Main.class', 'demo//Main.class']) {
+    const model = buildJar(openZip(zip([{ name, data: decoy }, { name: 'demo/Main.class', data: real }])))
+    assert.equal(loaded(model), 'demo/Main', name)
+    assert.equal(model.classCount, 1)
+    const issue = name === 'demo/Main.class' ? 'shadowed' : 'unusual'
+    const apart = model.tree.find((n) => n.id === UNUSUAL_ID)
+    assert.deepEqual(apart?.children.map((n) => [n.label, n.issue, n.kind, n.className]), [[name, issue, 'class', 'demo/Main']])
+    assert.deepEqual([model.unusual.length, model.shadowed.length], issue === 'unusual' ? [1, 0] : [0, 1])
+    assert.equal(model.tree[model.tree.length - 1].id, UNUSUAL_ID)
+  }
+  // In the other order the JVM runs the other copy, and so does the tree.
+  assert.equal(loaded(buildJar(openZip(zip([{ name: 'demo/Main.class', data: real }, { name: 'demo/Main.class', data: decoy }])))), 'demo/Decoy')
+  // Under an unusual name only, it is not a class the JVM can load.
+  const only = buildJar(openZip(zip([{ name: 'x/../demo/Main.class', data: real }])))
+  assert.equal(findClass(only, 'demo/Main'), undefined)
+  assert.equal(only.classCount, 0)
+  assert.deepEqual(outline(only.tree), ['folder Unusual entries', '  class x/../demo/Main.class'])
+  // The stored name is kept next to the path.
+  assert.deepEqual(only.unusual.map((e) => [e.name, e.path]), [['x/../demo/Main.class', 'demo/Main.class']])
+  // An ordinary jar has nothing apart.
+  const plain = buildJar(openZip(zip([cls('demo/Main'), { name: 'demo/', method: 0 }, { name: 'demo/', method: 0 }])))
+  assert.deepEqual([plain.unusual.length, plain.shadowed.length, plain.tree.some((n) => n.id === UNUSUAL_ID)], [0, 0, false])
+})
+
+test('reads the manifest that java.util.jar reads', () => {
+  const man = (main: string) => `Manifest-Version: 1.0\r\nMain-Class: ${main}\r\n\r\n`
+  const twice = buildJar(openZip(zip([{ name: 'META-INF/MANIFEST.MF', data: man('demo.Main') }, { name: 'META-INF/MANIFEST.MF', data: man('other.Run') }])))
+  assert.equal(twice.manifest?.main.get('Main-Class'), 'other.Run')
+  assert.equal(twice.manifestEntry?.index, 1)
+  const fake = buildJar(openZip(zip([{ name: 'x/../META-INF/MANIFEST.MF', data: man('Fake') }, { name: 'META-INF/MANIFEST.MF', data: man('Main') }])))
+  assert.equal(fake.manifest?.main.get('Main-Class'), 'Main')
+  assert.equal(buildJar(openZip(zip([{ name: 'x/../META-INF/MANIFEST.MF', data: man('Fake') }]))).manifest, undefined)
+  // JarFile falls back to a META-INF entry whose name matches in capitals.
+  assert.equal(buildJar(openZip(zip([{ name: 'meta-inf/manifest.mf', data: man('Low') }]))).manifest?.main.get('Main-Class'), 'Low')
+})
+
+/** A module-info class with a Module attribute for `name`. */
+function moduleInfo(name: string): Uint8Array {
+  const w = new ClassWriter({ name: 'module-info', superName: null, access: 0x8000 })
+  const mod = w.pool.module(name)
+  w.attribute({ name: 'Module', body: [...u2(mod), ...u2(0), ...u2(0), ...u2(0), ...u2(0), ...u2(0), ...u2(0), ...u2(0)] })
+  return w.toBytes()
+}
+
+// Review 1, finding 4: kotlin-stdlib, slf4j-api and jackson-core keep module-info under versions/9.
+test('finds the module of a multi-release jar that keeps module-info under versions', () => {
+  const mr = 'Manifest-Version: 1.0\r\nMulti-Release: true\r\n\r\n'
+  const model = buildJar(
+    openZip(
+      zip([
+        { name: 'META-INF/MANIFEST.MF', data: mr },
+        cls('kotlin/Unit'),
+        { name: 'META-INF/versions/9/module-info.class', data: moduleInfo('kotlin.old') },
+        { name: 'META-INF/versions/11/module-info.class', data: moduleInfo('kotlin.stdlib') }
+      ])
+    )
+  )
+  const info = model.moduleInfo
+  assert.equal(info?.release, 11)
+  assert.equal(info?.entry.name, 'META-INF/versions/11/module-info.class')
+  assert.ok([...walk(model.tree)].some((n) => n.id === info?.nodeId && n.entry === info.entry))
+  // The overview reads the name the same way.
+  const cls11 = info ? new ClassCache(model.zip).get('module', info.entry) : undefined
+  const attr = cls11?.attributes.find((a) => a.value.kind === 'Module')
+  assert.equal(attr?.value.kind === 'Module' ? cls11?.pool.text(attr.value.module.nameIndex) : undefined, 'kotlin.stdlib')
+  // Without Multi-Release the JVM ignores the versions folder.
+  assert.equal(buildJar(openZip(zip([cls('kotlin/Unit'), { name: 'META-INF/versions/9/module-info.class', data: moduleInfo('x') }]))).moduleInfo, undefined)
+  // A module-info at the top comes first.
+  const top = buildJar(openZip(zip([{ name: 'META-INF/MANIFEST.MF', data: mr }, { name: 'module-info.class', data: moduleInfo('top') }, { name: 'META-INF/versions/9/module-info.class', data: moduleInfo('nine') }])))
+  assert.deepEqual([top.moduleInfo?.entry.name, top.moduleInfo?.release, top.moduleInfo?.nodeId], ['module-info.class', undefined, 'c:module-info'])
+})
+
+/** The deepest level of the tree, counted without recursion. */
+function treeDepth(nodes: JarNode[]): number {
+  let max = 0
+  const stack: [JarNode, number][] = nodes.map((n) => [n, 1])
+  for (let item = stack.pop(); item; item = stack.pop()) {
+    const [n, d] = item
+    max = Math.max(max, d)
+    for (const c of n.children) stack.push([c, d + 1])
+  }
+  return max
+}
+
+// Review 1, findings 11 and 15: an entry thousands of folders deep overflowed the stack.
+test('opens a jar with entries tens of thousands of folders deep', () => {
+  const deepClass = `${'a/'.repeat(32000)}X`
+  const deepText = `${'b/'.repeat(6000)}x.txt`
+  const model = buildJar(
+    openZip(
+      zip([
+        { name: `${deepClass}.class`, data: 'x', method: 0 },
+        { name: deepText, data: 'x', method: 0 },
+        { name: 'c/'.repeat(5000), method: 0 },
+        cls('demo/Ok'),
+        { name: 'META-INF/MANIFEST.MF', data: 'Manifest-Version: 1.0\r\n\r\n' }
+      ])
+    )
+  )
+  assert.equal(findClass(model, deepClass)?.node.path, `${deepClass}.class`)
+  assert.ok(findClass(model, 'demo/Ok'))
+  assert.ok([...walk(model.tree)].some((n) => n.path === deepText))
+  assert.ok(treeDepth(model.tree) <= MAX_FOLDER_DEPTH + 1, String(treeDepth(model.tree)))
+  assert.equal(model.classCount, 2)
+})
+
+test('lists more entries at the top than a call takes arguments', () => {
+  const items: ZipItem[] = []
+  for (let i = 0; i < 130_000; i++) items.push({ name: `r${i}.txt`, method: 0 })
+  assert.equal(buildJar(openZip(zip(items))).tree.length, 130_000)
 })

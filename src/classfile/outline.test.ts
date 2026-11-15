@@ -2,6 +2,7 @@ import { assert, test } from 'orca/testing'
 import { type Attr, ClassWriter, anonymousName, asm, u2 } from '../testing/classwriter'
 import { parseClass } from './classfile'
 import { classKind } from './declarations'
+import { stringsFor } from '../i18n'
 import { detectLanguage } from './language'
 import { buildOutline } from './outline'
 
@@ -185,7 +186,7 @@ test('recognises Kotlin, Scala and Groovy classes', () => {
     ])
   )
   const kc = parseClass(kt.toBytes())
-  assert.deepEqual(detectLanguage(kc), { language: 'kotlin', kotlin: { kind: 1, version: '2.1.0', packageName: undefined, extra: undefined }, sourceFile: 'Point.kt' })
+  assert.deepEqual(detectLanguage(kc), { language: 'kotlin', kotlin: { kind: 1, metadataVersion: '2.1.0', packageName: undefined, extra: undefined }, sourceFile: 'Point.kt' })
   const ko = buildOutline(kc).text
   assert.match(ko, /^\/\/ Compiled by Kotlin; shown as the JVM sees it\.$/m)
   assert.match(ko, /^@Metadata\(mv = \{2, 1, 0\}, k = 1, d1 = \{\/\* 1 × protobuf \*\/\}\)$/m)
@@ -212,4 +213,98 @@ test('a damaged class still outlines what was read, with a note', () => {
   const text = buildOutline(cls).text
   assert.match(text, /void first\(\)/)
   assert.match(text, /\/\/ The file is damaged after this point: the file ends inside/)
+  // Review 1, finding 22: the reason comes in the comments' language, not the parser's English.
+  const ru = buildOutline(cls, { comments: stringsFor('ru').comments, reason: (code) => (code === 'truncated' ? 'файл обрывается' : '?') }).text
+  assert.match(ru, /\/\/ Дальше файл повреждён: файл обрывается\.$/m)
+  assert.ok(!/the file ends/.test(ru))
+})
+
+// Review 1, finding 19: javac gives an enum with constant bodies PermittedSubclasses.
+test('an enum with constant bodies is not written as a sealed enum', () => {
+  const w = new ClassWriter({ name: 'demo/Op', superName: 'java/lang/Enum', access: 0x4031, interfaces: ['java/util/function/IntBinaryOperator'] })
+  w.attribute(w.classListAttr('PermittedSubclasses', ['demo/Op$1', 'demo/Op$2']))
+  const text = buildOutline(parseClass(w.toBytes())).text
+  assert.match(text, /^public enum Op implements IntBinaryOperator \{$/m)
+  assert.ok(!/sealed|permits/.test(text))
+  // A sealed class keeps both.
+  const s = new ClassWriter({ name: 'demo/Shape', access: 0x0421 })
+  s.attribute(s.classListAttr('PermittedSubclasses', ['demo/Circle']))
+  assert.match(buildOutline(parseClass(s.toBytes())).text, /^public abstract sealed class Shape permits Circle \{$/m)
+})
+
+// Review 1, finding 5: a local class's constructor has the outer instance first and the
+// captured variables last; the Signature has only the declared parameters.
+test('names a local class constructor by its declared parameters', () => {
+  /** `named`: MethodParameters with names (-parameters); `flags`: with flags only (javac 21's
+   *  default); `lvt`: a LocalVariableTable (-g). */
+  const local = (methodParameters: 'named' | 'flags' | false, lvt: boolean) => {
+    const w = new ClassWriter({ name: 'q/Cap$1Loc', access: 0x0020 })
+    w.attribute({ name: 'InnerClasses', body: [...u2(1), ...u2(w.pool.cls('q/Cap$1Loc')), ...u2(0), ...u2(w.pool.utf8('Loc')), ...u2(0)] })
+    const attributes: Attr[] = []
+    const lvtBody = [
+      ...u2(4),
+      ...[0, 0, 0, 1, ...u2(w.pool.utf8('this')), ...u2(w.pool.utf8('Lq/Cap$1Loc;')), 0, 0],
+      ...[0, 0, 0, 1, ...u2(w.pool.utf8('this$0')), ...u2(w.pool.utf8('Lq/Cap;')), 0, 1],
+      ...[0, 0, 0, 1, ...u2(w.pool.utf8('s')), ...u2(w.pool.utf8('Ljava/lang/String;')), 0, 2],
+      ...[0, 0, 0, 1, ...u2(w.pool.utf8('n')), ...u2(w.pool.utf8('J')), 0, 3]
+    ]
+    attributes.push(w.code({ maxStack: 1, maxLocals: 7, code: asm('return'), attributes: lvt ? [{ name: 'LocalVariableTable', body: lvtBody }] : [] }))
+    attributes.push(w.utf8Attr('Signature', '(Ljava/lang/String;J)V'))
+    if (methodParameters) {
+      const p = (name: string, access: number) => [...u2(methodParameters === 'named' ? w.pool.utf8(name) : 0), ...u2(access)]
+      attributes.push({ name: 'MethodParameters', body: [5, ...p('this$0', 0x8010), ...p('s', 0), ...p('n', 0), ...p('val$captured', 0x1010), ...p('val$other', 0x1010)] })
+    }
+    attributes.push({ name: 'RuntimeVisibleParameterAnnotations', body: [2, ...u2(1), ...u2(w.pool.utf8('Lq/Tag;')), ...u2(0), ...u2(0)] })
+    w.method({ access: 0, name: '<init>', descriptor: '(Lq/Cap;Ljava/lang/String;JILjava/lang/String;)V', attributes })
+    return buildOutline(parseClass(w.toBytes())).text
+  }
+  assert.match(local('named', false), /^ {4}Loc\(@Tag String s, long n\) \{/m)
+  assert.match(local('flags', true), /^ {4}Loc\(@Tag String s, long n\) \{/m)
+  assert.match(local(false, true), /^ {4}Loc\(@Tag String s, long n\) \{/m)
+  assert.match(local('flags', false), /^ {4}Loc\(@Tag String arg0, long arg1\) \{/m)
+  // Neither: the types still line up after the outer instance.
+  assert.match(local(false, false), /^ {4}Loc\(@Tag String arg0, long arg1\) \{/m)
+  for (const text of [local('named', false), local(false, true)]) assert.ok(!/val\$|this\$0|final /.test(text))
+})
+
+// Review 1, finding 13: the Outline shows a body for a method whose Code cannot be read.
+test('a method with a damaged Code attribute still has a body, with a note', () => {
+  const w = new ClassWriter({ name: 'demo/Broken' })
+  w.method({ access: 1, name: 'answer', descriptor: '()I', attributes: [{ name: 'Code', body: [0, 1, 0, 1, 0, 0, 3, 232, 0xac, 0, 0, 0, 0] }] })
+  const cls = parseClass(w.toBytes())
+  assert.match(buildOutline(cls).text, /^ {4}public int answer\(\) \{ \/\* compiled code, damaged: the file ends inside the bytecode \*\/ \}$/m)
+  const ru = buildOutline(cls, { comments: stringsFor('ru').comments, reason: () => 'файл обрывается' }).text
+  assert.match(ru, /public int answer\(\) \{ \/\* скомпилированный код, повреждён: файл обрывается \*\/ \}/)
+})
+
+// Review 1, finding 6: class names in the Outline carry links, for the view to open them.
+test('the outline marks class names it prints, nested and anonymous classes too', () => {
+  const telescope = new ClassWriter({ name: 'demo/Telescope', interfaces: ['java/lang/AutoCloseable'] })
+  telescope.attribute({
+    name: 'InnerClasses',
+    body: [
+      ...u2(2),
+      ...[...u2(telescope.pool.cls('demo/Telescope$Mount')), ...u2(telescope.pool.cls('demo/Telescope')), ...u2(telescope.pool.utf8('Mount')), ...u2(0x0009)],
+      ...[...u2(telescope.pool.cls(anonymousName('demo/Telescope', 1))), ...u2(0), ...u2(0), ...u2(0)]
+    ]
+  })
+  telescope.field({ access: 2, name: 'body', descriptor: 'Ldemo/CelestialBody;' })
+  telescope.method({ access: 1, name: 'track', descriptor: '(Ldemo/CelestialBody;)Ljava/util/List;', attributes: [body(telescope)] })
+  const outline = buildOutline(parseClass(telescope.toBytes()))
+  const linked = (pattern: RegExp) => {
+    const line = outline.lines.find((l) => pattern.test(l.text))
+    return (line?.links ?? []).map((l) => [line?.text.slice(l.from, l.to), l.name])
+  }
+  assert.deepEqual(linked(/^import java\.util\.List;/), [['java.util.List', 'java/util/List']])
+  assert.deepEqual(linked(/^public class Telescope/), [['AutoCloseable', 'java/lang/AutoCloseable']])
+  assert.deepEqual(linked(/private CelestialBody body;/), [['CelestialBody', 'demo/CelestialBody']])
+  assert.deepEqual(linked(/List track\(/), [
+    ['List', 'java/util/List'],
+    ['CelestialBody', 'demo/CelestialBody']
+  ])
+  // A member class the archive does not hold, and an anonymous class.
+  assert.deepEqual(linked(/class Mount \{ \/\* in Telescope\$Mount\.class \*\/ \}/), [['Mount', 'demo/Telescope$Mount']])
+  assert.deepEqual(linked(/\/\/ anonymous class/), [[anonymousName('Telescope', 1), anonymousName('demo/Telescope', 1)]])
+  // The markers never reach the text.
+  assert.ok(!/[\u{e000}-\u{e002}]/u.test(outline.text))
 })

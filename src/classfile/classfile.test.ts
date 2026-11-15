@@ -2,7 +2,7 @@ import { assert, test } from 'orca/testing'
 import { ClassWriter, asm, helloClass, u2 } from '../testing/classwriter'
 import { findAttribute } from './attributes'
 import { ClassFormatError, decodeModifiedUtf8, encodeModifiedUtf8 } from './bytes'
-import { parseClass, peekVersion } from './classfile'
+import { damagedAttributes, parseClass, peekVersion } from './classfile'
 import { flagNames, flagSummary, javaModifiers } from './flags'
 import { formatJavaNumber, javaDouble, javaFloat } from './pool'
 import { javaRelease, releaseLabel } from './versions'
@@ -133,6 +133,43 @@ test('formats float and double like Java', () => {
   assert.equal(javaFloat(NaN), 'Float.NaN')
   assert.equal(javaDouble(-Infinity), 'Double.NEGATIVE_INFINITY')
   assert.equal(javaDouble(203.2), '203.2')
+})
+
+// Review 1, finding 18: Java never prints one digit; it takes the closest two-digit decimal.
+// Expected values are what Float.toString and Double.toString print in Java 21.
+test('formats subnormal floats and doubles like Float.toString and Double.toString', () => {
+  const float = (bits: number) => new DataView(Uint32Array.of(bits).buffer).getFloat32(0, true)
+  assert.equal(formatJavaNumber(float(0x00000001), true), '1.4E-45') // Float.MIN_VALUE
+  assert.equal(formatJavaNumber(float(0x00000002), true), '2.8E-45')
+  assert.equal(formatJavaNumber(float(0x7f7fffff), true), '3.4028235E38') // Float.MAX_VALUE
+  assert.equal(formatJavaNumber(float(0x00800000), true), '1.1754944E-38') // Float.MIN_NORMAL
+  assert.equal(formatJavaNumber(Number.MIN_VALUE, false), '4.9E-324') // Double.MIN_VALUE
+  assert.equal(formatJavaNumber(2 * Number.MIN_VALUE, false), '9.9E-324')
+  assert.equal(formatJavaNumber(Number.MAX_VALUE, false), '1.7976931348623157E308')
+  assert.equal(formatJavaNumber(2.2250738585072014e-308, false), '2.2250738585072014E-308') // Double.MIN_NORMAL
+  assert.equal(formatJavaNumber(1e23, false), '1.0E23')
+  assert.equal(formatJavaNumber(1e10, false), '1.0E10')
+  assert.equal(formatJavaNumber(100, false), '100.0')
+  assert.equal(formatJavaNumber(-123456.789, false), '-123456.789')
+  assert.equal(formatJavaNumber(Math.fround(1.1), true), '1.1')
+  assert.equal(javaDouble(Number.MIN_VALUE), '4.9E-324')
+  assert.equal(javaFloat(float(1)), '1.4E-45F')
+})
+
+// Review 1, finding 13: a Code attribute that cannot be read leaves the class readable.
+test('finds a damaged Code attribute though the class reads to its end', () => {
+  const w = helloClass('demo/Broken')
+  // code_length says 1000, but the attribute holds one byte of code.
+  const code = [0, 1, 0, 1, ...[0, 0, 3, 232], 0xac, 0, 0, 0, 0]
+  w.method({ access: 1, name: 'answer', descriptor: '()I', attributes: [{ name: 'Code', body: code }] })
+  const cls = parseClass(w.toBytes())
+  assert.equal(cls.error, undefined)
+  const damaged = damagedAttributes(cls)
+  assert.equal(damaged.length, 1)
+  assert.equal(damaged[0].attribute.name, 'Code')
+  assert.deepEqual(damaged[0].owner, { kind: 'method', index: 1 })
+  assert.equal(damaged[0].attribute.errorCode, 'truncated')
+  assert.equal(damagedAttributes(parseClass(helloClass().toBytes())).length, 0)
 })
 
 test('decodes modified UTF-8 with encoded NUL and surrogate pairs', () => {

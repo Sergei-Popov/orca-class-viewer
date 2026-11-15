@@ -10,8 +10,11 @@ export type Language = 'java' | 'kotlin' | 'scala' | 'groovy' | 'clojure' | 'oth
 export type KotlinInfo = {
   /** 1 class, 2 file facade, 3 synthetic class (lambdas, `when` mappings), 4 multi-file facade, 5 multi-file part. */
   kind: number
-  /** Metadata version, "2.1.0". */
-  version?: string
+  /**
+   * `mv`, the version of the @Metadata format, "1.9.0". It is not the compiler's version: Kotlin
+   * 1.3.72 wrote 1.1.16, and 1.9.22 writes 1.9.0. The class file does not record the compiler.
+   */
+  metadataVersion?: string
   /** Package name when it differs from the JVM package (`pn`). */
   packageName?: string
   /** `xs`: the facade class of a multi-file part. */
@@ -81,7 +84,7 @@ function kotlinInfo(pool: ConstantPool, a: Annotation): KotlinInfo {
   const version = mv?.tag === '[' ? mv.values.map(int).filter((n) => n !== undefined).join('.') : undefined
   return {
     kind: int(element(a, pool, 'k')) ?? 1,
-    version: version || undefined,
+    metadataVersion: version || undefined,
     packageName: str(element(a, pool, 'pn')) || undefined,
     extra: str(element(a, pool, 'xs')) || undefined
   }

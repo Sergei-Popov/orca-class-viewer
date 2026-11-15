@@ -13,6 +13,8 @@ const SIG_LOCATOR64 = 0x07064b50
 
 export type ZipEntry = {
   index: number
+  /** The name exactly as the central directory stores it. The JVM looks entries up by it. */
+  name: string
   /** Normalized path: forward slashes, no leading slash, no `.` segments. */
   path: string
   dir: boolean
@@ -164,6 +166,7 @@ export function openZip(bytes: Uint8Array): Zip {
     }
     raws.push({
       index: raws.length,
+      name,
       path: normalizePath(name),
       dir: /[/\\]$/.test(name) || ((external & 0x10) !== 0 && size === 0),
       size,

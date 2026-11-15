@@ -3,7 +3,7 @@
 // the first time it is shown. A file that is not a class at all gets a message and its first bytes.
 
 import { ClassFormatError } from '../classfile/bytes'
-import { type ClassFile, parseClass } from '../classfile/classfile'
+import { type ClassFile, type DamagedAttribute, damagedAttributes, parseClass } from '../classfile/classfile'
 import { makeNamer, methodParts, sourceSimpleName } from '../classfile/declarations'
 import { type LanguageInfo, detectLanguage } from '../classfile/language'
 import { binaryName, displayName, hasHiddenCharacters } from '../classfile/names'
@@ -12,7 +12,7 @@ import { NEWEST_KNOWN_MAJOR, javaRelease } from '../classfile/versions'
 import { type Seg, classListing } from '../bytecode/listing'
 import { CodeView, type LinkData, type Span, type ViewLine } from './codeview'
 import { copyText, h, storageGet, storageSet, svg } from './dom'
-import { type Env, fill, hexDump, reasonText, saveFile, sizeText } from './env'
+import { type Env, fill, hexDump, reasonFor, reasonText, saveFile, sizeText } from './env'
 import { icon } from './icons'
 import { type JavaState, type TokenKind, tokenizeJava } from './java'
 import { PoolTable } from './pooltable'
@@ -86,6 +86,7 @@ export class ClassView {
   private readonly env: Env
   private cls: ClassFile | undefined
   private lang: LanguageInfo | undefined
+  private damaged: DamagedAttribute[] = []
   private ctx: ClassContext = {}
   private tab: TabName
   private readonly header: HTMLElement
@@ -193,6 +194,7 @@ export class ClassView {
     }
     this.cls = cls
     this.lang = detectLanguage(cls)
+    this.damaged = damagedAttributes(cls)
     this.renderHeader(cls, this.lang)
     this.renderNotices(cls)
     if (ctx.extra) this.notices.prepend(ctx.extra)
@@ -224,7 +226,13 @@ export class ClassView {
     }
     let pane = this.built.get(name)
     if (!pane) {
-      pane = this.build(name, this.cls)
+      try {
+        pane = this.build(name, this.cls)
+      } catch (error) {
+        // One view that cannot be built leaves the other tabs usable.
+        console.warn(`[class-viewer] cannot build the ${name} tab`, error)
+        pane = { el: this.tabError(error) }
+      }
       this.built.set(name, pane)
       this.panes.append(pane.el)
     }
@@ -236,6 +244,13 @@ export class ClassView {
     this.saveButton.hidden = !code || !this.env.saveAs
     this.saveButton.title = name === 'outline' ? this.env.t.saveOutline : this.env.t.saveListing
     if (code) this.runFind()
+  }
+
+  private tabError(error: unknown): HTMLElement {
+    const t = this.env.t
+    const message = error instanceof Error ? error.message : String(error)
+    const box = h('div', { className: 'cv-center' }, svg(icon('warning')), h('h2', {}, t.tabErrorTitle), h('p', { title: message }, t.tabErrorText))
+    return h('div', { className: 'cv-pane' }, box)
   }
 
   private build(name: TabName, cls: ClassFile): { el: HTMLElement; code?: CodeView; pool?: PoolTable } {
@@ -267,8 +282,14 @@ export class ClassView {
   }
 
   private outlineLines(cls: ClassFile): ViewLine[] {
-    const outline = buildOutline(cls, { resolve: this.ctx.resolve, comments: this.env.t.comments })
+    const env = this.env
+    const outline = buildOutline(cls, {
+      resolve: this.ctx.resolve,
+      comments: env.t.comments,
+      reason: (code, message) => reasonFor(env, code, message)
+    })
     const state: JavaState = { comment: false }
+    const { hasClass, openClass } = this.ctx
     return outline.lines.map((line) => {
       let spans = javaSpans(line.text, state)
       const target = line.target
@@ -276,10 +297,14 @@ export class ClassView {
         const paren = line.text.indexOf('(')
         let start = paren
         while (start > 0 && /[\p{L}\p{N}_$\\]/u.test(line.text[start - 1])) start--
-        if (paren > start) spans = linkRange(spans, start, paren, { kind: 'method', index: target.index }, this.env.t.showBytecode)
-      } else if (target?.kind === 'class' && this.ctx.hasClass?.(target.name) && this.ctx.openClass) {
-        const m = /\{ \/\* .* \*\/ \}$/.exec(line.text)
-        if (m) spans = linkRange(spans, m.index + 5, line.text.length - 5, { kind: 'class', name: target.name }, fill(this.env.t.openClass, { name: displayName(binaryName(target.name)) }))
+        if (paren > start) spans = linkRange(spans, start, paren, { kind: 'method', index: target.index }, env.t.showBytecode)
+      }
+      // Other classes of the archive open from their names: types, imports, nested classes.
+      if (hasClass && openClass) {
+        for (const l of line.links ?? []) {
+          if (l.name === cls.name || !hasClass(l.name)) continue
+          spans = linkRange(spans, l.from, l.to, { kind: 'class', name: l.name }, fill(env.t.openClass, { name: binaryName(l.name) }))
+        }
       }
       return { text: line.text, spans }
     })
@@ -397,10 +422,12 @@ export class ClassView {
     this.header.append(h('span', { className: release.newer || release.unknown ? 'cv-badge cv-warn' : 'cv-badge cv-java', title: versionTitle }, label))
     if (lang.language !== 'java' && lang.language !== 'other') {
       const name = { kotlin: t.languageKotlin, scala: t.languageScala, groovy: t.languageGroovy, clojure: t.languageClojure }[lang.language]
-      const tip = lang.kotlin?.version ? fill(t.kotlinTitle, { version: lang.kotlin.version }) : fill(t.languageTitle, { language: name })
+      const version = lang.kotlin?.metadataVersion
+      const tip = version ? fill(t.kotlinTitle, { version }) : fill(t.languageTitle, { language: name })
       this.header.append(h('span', { className: 'cv-badge', title: tip }, name))
     }
-    if (cls.error) this.header.append(h('span', { className: 'cv-badge cv-bad', title: cls.error.message }, t.damagedBadge))
+    const damaged = cls.error ? reasonText(this.env, cls.error) : this.damaged[0] && damagedText(this.env, cls, this.damaged[0])
+    if (damaged) this.header.append(h('span', { className: 'cv-badge cv-bad', title: damaged }, t.damagedBadge))
     this.header.append(h('span', { className: 'cv-spacer' }), h('span', { className: 'cv-summary' }, sizeText(this.env, cls.size)))
   }
 
@@ -419,6 +446,13 @@ export class ClassView {
     }
     if (cls.error) {
       notice('cv-bad', 'warning', t.damagedTitle, fill(t.damagedText, { offset: cls.error.offset.toLocaleString(this.env.locale), reason: reasonText(this.env, cls.error) }), cls.error.message)
+    }
+    if (this.damaged.length) {
+      // The class reads to its end, but some attributes inside it do not.
+      const shown = this.damaged.slice(0, 3).map((d) => damagedText(this.env, cls, d))
+      const more = this.damaged.length - shown.length
+      const text = shown.join(' ') + (more > 0 ? ` ${fill(t.damagedAttributesMore, { n: more.toLocaleString(this.env.locale) })}` : '')
+      notice('cv-bad', 'warning', t.damagedAttributesTitle, text)
     }
     if (cls.trailing > 0) notice('cv-info', 'info', undefined, fill(t.trailingText, { n: t.bytes(cls.trailing) }))
     if (hasObfuscatedNames(cls)) notice('cv-info', 'info', undefined, t.hiddenText)
@@ -440,6 +474,15 @@ export class ClassView {
     if (!(error instanceof ClassFormatError)) console.warn('[class-viewer] cannot read the class', error)
     this.panes.append(h('div', { className: 'cv-pane' }, box))
   }
+}
+
+/** "Code of the method answer: the file ends early." */
+function damagedText(env: Env, cls: ClassFile, d: DamagedAttribute): string {
+  const t = env.t
+  const o = d.owner
+  const owner =
+    o.kind === 'class' ? t.useClass : fill(o.kind === 'field' ? t.useField : t.useMethod, { name: displayName((o.kind === 'field' ? cls.fields : cls.methods)[o.index]?.name ?? '?') })
+  return fill(t.damagedAttribute, { attribute: displayName(d.attribute.name), owner, reason: reasonFor(env, d.attribute.errorCode, d.attribute.error ?? '') })
 }
 
 function hasObfuscatedNames(cls: ClassFile): boolean {

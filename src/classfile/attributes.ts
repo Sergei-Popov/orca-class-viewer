@@ -1,7 +1,7 @@
 // Attributes (JVMS 4.7): parsed by name into typed values. An attribute the parser does not know,
 // or one that is damaged, keeps its raw bytes so the structure view can still list it.
 
-import { ClassFormatError, Reader, decodeModifiedUtf8 } from './bytes'
+import { ClassFormatError, type FormatErrorCode, Reader, decodeModifiedUtf8 } from './bytes'
 import type { ConstantPool } from './pool'
 
 export type ExceptionEntry = { start: number; end: number; handler: number; catchType: number }
@@ -97,6 +97,8 @@ export type AttributeInfo = {
   value: AttributeValue
   /** Set when the attribute is damaged; `value` is then `Raw`. */
   error?: string
+  /** What kind of damage, for a message in the UI language. */
+  errorCode?: FormatErrorCode
 }
 
 const MAX_NESTING = 32
@@ -116,11 +118,13 @@ export function readAttributes(r: Reader, pool: ConstantPool, depth = 0): Attrib
       info.value = parseValue(name, body, pool, depth)
       if (body.remaining > 0 && info.value.kind !== 'Raw') {
         info.error = `${body.remaining} bytes left over`
+        info.errorCode = 'malformed'
       }
     } catch (error) {
       if (!(error instanceof ClassFormatError)) throw error
       info.value = { kind: 'Raw' }
       info.error = error.message
+      info.errorCode = error.code
     }
     out.push(info)
   }

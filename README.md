@@ -24,23 +24,26 @@ Four tabs:
   sealed classes with `permits`, `module-info`. Method bodies stay compiled code: each method
   says which source lines it came from, and its name links to its bytecode. Synthetic members
   (lambdas, bridges, enum helpers) are listed as comments. In a jar, member classes are shown
-  inside their outer class, and other classes of the jar open from their names.
+  inside their outer class, and the name of another class of the jar (in an import, a
+  declaration or a member's type) opens that class.
 - **Bytecode** — every method listed like `javap -c -v`: descriptor, flags, stack and locals,
-  instructions with the constant pool entries they use explained in comments, `tableswitch` and
-  `lookupswitch`, exception tables, line numbers, local variables and stack map frames. Constant
-  pool references open the entry; jump targets go to the instruction; a picker jumps to a method.
+  instructions with the constant pool entries they use explained in comments (string constants
+  written as `javap` writes them), `tableswitch` and `lookupswitch`, exception tables, line
+  numbers, local variables and stack map frames. Constant pool references open the entry; jump
+  targets go to the instruction; a picker jumps to a method.
 - **Structure** — the class file as it is: header (size, version, flags, this and super class,
   interfaces), the field and method tables, and every attribute with its offset and length:
   inner classes, bootstrap methods, module, record components, annotations, and a hex dump of
-  attributes the viewer does not decode.
+  attributes the viewer does not decode. A field's or method's attributes open under its row.
 - **Constant pool** — every entry with its type, the entries it refers to and its value, and how
   often it is used. Filter by text, `#index` or type. Selecting an entry lists what refers to it:
   other entries, instructions (with links into the bytecode) and parts of the class.
 
 The header shows the class name, a **Java N** badge for the release it was compiled for (preview
 features marked), and a badge for classes compiled by Kotlin, Scala, Groovy or Clojure. For a
-Kotlin class the badge gives the Kotlin version from its `@Metadata`, and the Structure tab its
-Kotlin kind (class, file facade, multi-file part…). Find (`⌘F` / `Ctrl+F`) works in the Outline
+Kotlin class the Structure tab gives its Kotlin kind (class, file facade, multi-file part…) and
+the version of its `@Metadata`, which is the metadata format's version, not the compiler's
+(Kotlin 1.3.72 writes 1.1.16). Find (`⌘F` / `Ctrl+F`) works in the Outline
 and Bytecode tabs; **Copy** puts the tab's text on the clipboard, and **Save…** writes the
 outline as `Name.java` or the listing as `Name.javap.txt`.
 
@@ -49,11 +52,13 @@ Odd and broken files get a clear message instead of a blank tab:
 - a class newer than the viewer knows (above class file version 71, Java 27) is shown as far as
   the known format goes, with a notice;
 - a damaged or cut-off class shows everything read before the damage and says where reading
-  stopped and why;
+  stopped and why; a damaged attribute (a method's code, say) is named in a notice, and the
+  rest of the class still shows;
 - a file that is not a class shows its first bytes in hex, and a jar saved as `.class` is
   recognised as a ZIP archive;
-- obfuscated names stay readable: invisible and control characters are shown as `\uXXXX`
-  escapes, with a notice.
+- obfuscated names stay readable: invisible, control and right-to-left characters are shown as
+  escapes (`\t`, `​`) wherever a name appears, with a notice. A space inside a name, as in
+  Kotlin test names, stays a space.
 
 ## A jar
 
@@ -66,8 +71,13 @@ Odd and broken files get a clear message instead of a blank tab:
 - **Archives inside**: `WEB-INF/lib/*.jar`, `BOOT-INF/lib/*.jar` and an Android library's
   `classes.jar` open in place (`Enter`), with a trail back.
 - **Overview**: counts of classes, packages and resources, a chart of the Java versions the
-  classes are compiled for, the module name, `Main-Class` as a link, other key manifest
-  attributes, multi-release versions and the archives inside.
+  classes are compiled for, the module name (from `META-INF/versions/N` when a multi-release jar
+  keeps its `module-info` only there), `Main-Class` as a link, other key manifest attributes,
+  multi-release versions and the archives inside.
+- **Entries as the JVM takes them**: by their exact stored names, the last copy of a name
+  winning, for classes and the manifest alike. Names the JVM never looks up (with `..`, `.`, `\`
+  or a leading `/`) and the earlier copies of a name are listed apart under **Unusual entries**,
+  with a notice, so a crafted jar cannot show a decoy in place of the class that runs.
 - Selecting a class opens it with the four tabs above. Selecting a file previews it: text with
   the manifest and `.properties` keys and `.java` sources highlighted, images, or a hex dump;
   **Save…** writes the file through Orca's save dialog.
@@ -92,7 +102,8 @@ Odd and broken files get a clear message instead of a blank tab:
   overview's version chart fills in while you browse. Classes are read when you select them.
 - Archives inside open up to 64 MiB each and 4 levels deep; text previews show the first 2 MiB,
   images up to 16 MiB, and other files the first 4 KiB in hex. Code lines are cut at 4,000
-  characters.
+  characters on screen. Classes read only for the Outline's names are limited to 4 MiB each and
+  64 MiB in all. Folders more than 128 levels deep are shown as one.
 - ZIP entries that are encrypted or use methods other than stored and Deflate (jars never do) are
   listed but not read.
 - Orca opens an empty file in its own text editor, so the viewer's "file is empty" message is not
@@ -139,7 +150,8 @@ orca plugin shot local.class-viewer --editor path/to/Some.class   # PNG of the e
 - `src/zip/` — the ZIP reader, a DEFLATE decoder and CRC-32, written for this plugin (the ZIP
   reading follows Archive Viewer's).
 - `src/jar/` — the jar model (packages, class roots, nested classes, multi-release versions,
-  archives inside) and the manifest parser.
+  archives inside, entries listed apart), the manifest parser and the budgeted cache of classes
+  read to resolve names.
 - `src/ui/` — the views, styles, icons and the Java highlighter; `src/i18n.ts` holds the English
   and Russian strings.
 - `src/decompiler/` — the boundary for a decompiler; none is bundled yet.

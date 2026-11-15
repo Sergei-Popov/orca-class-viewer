@@ -122,6 +122,31 @@ function readU32(b: Uint8Array, at: number): number {
   return ((b[at] << 24) | (b[at + 1] << 16) | (b[at + 2] << 8) | b[at + 3]) >>> 0
 }
 
+/** An attribute that could not be read, and whose it is. */
+export type DamagedAttribute = {
+  attribute: AttributeInfo
+  owner: { kind: 'class' } | { kind: 'field' | 'method'; index: number }
+}
+
+/**
+ * Attributes that could not be read, though the class around them could: a Code attribute
+ * that ends inside its bytecode, say. The class itself keeps no `error` for them.
+ */
+export function damagedAttributes(cls: ClassFile): DamagedAttribute[] {
+  const out: DamagedAttribute[] = []
+  const scan = (attributes: AttributeInfo[], owner: DamagedAttribute['owner'], depth = 0) => {
+    for (const a of attributes) {
+      if (a.error) out.push({ attribute: a, owner })
+      else if (depth < 2 && a.value.kind === 'Code') scan(a.value.code.attributes, owner, depth + 1)
+      else if (depth < 2 && a.value.kind === 'Record') for (const c of a.value.components) scan(c.attributes, owner, depth + 1)
+    }
+  }
+  cls.fields.forEach((f, index) => scan(f.attributes, { kind: 'field', index }))
+  cls.methods.forEach((m, index) => scan(m.attributes, { kind: 'method', index }))
+  scan(cls.attributes, { kind: 'class' })
+  return out
+}
+
 /** The Signature attribute's text, when present. */
 export function signatureOf(pool: ConstantPool, attributes: AttributeInfo[]): string | undefined {
   const a = findAttribute(attributes, 'Signature')

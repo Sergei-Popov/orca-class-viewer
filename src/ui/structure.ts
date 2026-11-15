@@ -9,7 +9,7 @@ import type { LanguageInfo } from '../classfile/language'
 import { binaryName, displayName } from '../classfile/names'
 import { javaRelease } from '../classfile/versions'
 import { h } from './dom'
-import { type Env, fill, hexDump, sizeText } from './env'
+import { type Env, fill, hexDump, reasonFor, sizeText } from './env'
 
 export type StructureActions = {
   showPool: (index: number) => void
@@ -77,8 +77,9 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
   if (lang.sourceFile) rows.push([t.sourceFile, h('span', { className: 'cv-mono' }, displayName(lang.sourceFile))])
   if (lang.language !== 'java' && lang.language !== 'other') {
     const name = { kotlin: t.languageKotlin, scala: t.languageScala, groovy: t.languageGroovy, clojure: t.languageClojure }[lang.language]
-    const extra = lang.kotlin?.version ? ` ${lang.kotlin.version}` : lang.scalaVersion ? ` ${lang.scalaVersion}` : ''
-    rows.push([t.language, `${name}${extra}`])
+    rows.push([t.language, lang.scalaVersion ? `${name} ${lang.scalaVersion}` : name])
+    // @Metadata keeps the version of its own format, not of the compiler that wrote it.
+    if (lang.kotlin?.metadataVersion) rows.push([t.kotlinMetadata, lang.kotlin.metadataVersion])
     if (lang.kotlin?.kind !== undefined) rows.push([t.kotlinKind, t.kotlinKinds[lang.kotlin.kind - 1] ?? String(lang.kotlin.kind)])
   }
   section(t.secClass, undefined, true, kv(rows))
@@ -89,6 +90,7 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
     const head = h('tr', {}, h('th', {}, t.colFlags), h('th', {}, t.colName), h('th', {}, t.colDescriptor))
     if (kind === 'method') head.append(h('th', {}, t.colCode))
     head.append(h('th', {}, t.colAttributes))
+    const columns = kind === 'method' ? 5 : 4
     table.append(h('thead', {}, head))
     const body = h('tbody', {})
     members.forEach((m, k) => {
@@ -98,16 +100,17 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
           : h('span', { className: 'cv-mono' }, displayName(m.name))
       const row = h('tr', {}, h('td', { className: 'cv-mono', title: flagNames(m.access, kind).join(', ') }, `${hex4(m.access)} ${javaFlags(m.access, kind)}`), h('td', {}, name), h('td', { className: 'cv-mono' }, displayName(m.descriptor)))
       if (kind === 'method') {
-        const code = m.attributes.find((a) => a.value.kind === 'Code')
-        row.append(
-          h(
-            'td',
-            { className: 'cv-mono' },
-            code?.value.kind === 'Code' ? fill(t.codeSummary, { size: t.bytes(code.value.code.code.length), stack: code.value.code.maxStack, locals: code.value.code.maxLocals }) : '—'
-          )
-        )
+        const code = m.attributes.find((a) => a.name === 'Code')
+        const cell = h('td', { className: 'cv-mono' })
+        if (code?.value.kind === 'Code') {
+          const c = code.value.code
+          cell.append(fill(t.codeSummary, { size: t.bytes(c.code.length), stack: c.maxStack, locals: c.maxLocals }))
+        } else if (code?.error) {
+          cell.append(h('span', { className: 't-bad', title: reasonFor(env, code.errorCode, code.error) }, t.damagedBadge))
+        } else cell.append('—')
+        row.append(cell)
       }
-      row.append(h('td', { className: 'cv-mono' }, m.attributes.map((a) => a.name).join(', ') || '—'))
+      row.append(memberAttributes(m, row, columns))
       body.append(row)
     })
     table.append(body)
@@ -130,6 +133,32 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
     else if (el.dataset.class) actions.openClass?.(el.dataset.class)
   })
   return doc
+
+  /** A member's attribute names; a click opens a row below with each attribute in full. */
+  function memberAttributes(m: Member, row: HTMLElement, columns: number): HTMLElement {
+    const cell = h('td', { className: 'cv-mono' })
+    if (!m.attributes.length) {
+      cell.append('—')
+      return cell
+    }
+    const button = h('button', { className: 'cv-a cv-mono', type: 'button', 'aria-expanded': 'false', title: t.showAttributes })
+    m.attributes.forEach((a, k) => {
+      if (k) button.append(', ')
+      button.append(a.error ? h('span', { className: 't-bad', title: reasonFor(env, a.errorCode, a.error) }, displayName(a.name)) : displayName(a.name))
+    })
+    let detail: HTMLTableRowElement | undefined
+    button.addEventListener('click', () => {
+      if (!detail) {
+        const blocks = h('td', { colspan: columns })
+        for (const a of m.attributes) blocks.append(attributeBlock(a))
+        detail = h('tr', { className: 'cv-attr-row' }, blocks)
+        row.after(detail)
+      } else detail.hidden = !detail.hidden
+      button.setAttribute('aria-expanded', String(!detail.hidden))
+    })
+    cell.append(button)
+    return cell
+  }
 
   function attributeBlock(a: AttributeInfo): HTMLElement {
     const block = h('div', { className: 'cv-attr' })
@@ -234,8 +263,14 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
         break
       case 'Marker':
         break
+      case 'Code': {
+        const c = v.code
+        body.append(h('div', { className: 'cv-mono' }, fill(t.codeSummary, { size: t.bytes(c.code.length), stack: c.maxStack, locals: c.maxLocals })))
+        for (const inner of c.attributes) body.append(attributeBlock(inner))
+        break
+      }
       default:
-        if (a.error) body.append(h('p', { className: 't-bad' }, fill(t.attributeError, { reason: env.t.ownReasons === 'yes' ? a.error : t.reasonDamaged })))
+        if (a.error) body.append(h('p', { className: 't-bad' }, fill(t.attributeError, { reason: reasonFor(env, a.errorCode, a.error) })))
         if (a.bytes.length) body.append(h('pre', { className: 'cv-hex' }, hexDump(a.bytes, 512)))
     }
     return block
