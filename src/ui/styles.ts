@@ -213,7 +213,7 @@ button, select, input { font: inherit; color: inherit; }
 .cv-trow .cv-uses { color: var(--muted-fg); text-align: right; font-variant-numeric: tabular-nums; }
 .cv-trow .cv-empty-slot { color: var(--muted-fg); font-style: italic; font-family: var(--ui-font); }
 .cv-trow mark { background: var(--mark); color: inherit; border-radius: 2px; }
-.cv-detail { border-top: 1px solid var(--border); padding: 8px 12px 10px; max-height: 40%; overflow: auto; min-height: 44px; }
+.cv-detail { border-top: 1px solid var(--border); padding: 8px 12px 10px; max-height: 40vh; overflow: auto; min-height: 44px; }
 .cv-detail h3 { margin: 6px 0 3px; font-size: 11px; font-weight: 600; color: var(--muted-fg); text-transform: none; }
 .cv-detail h3:first-child { margin-top: 0; }
 .cv-detail .cv-dvalue { font: 12px/1.5 var(--mono-font); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
@@ -273,7 +273,7 @@ button, select, input { font: inherit; color: inherit; }
 .cv-tree-bar .cv-search { flex: 1; min-width: 0; }
 .cv-tree-bar .cv-search input { width: 100%; }
 .cv-scroll { position: relative; flex: 1; min-height: 0; overflow: auto; outline: none; }
-.cv-scroll:focus-visible { box-shadow: inset 0 0 0 1px var(--ring); }
+.cv-scroll:focus-visible:not(:has([aria-selected="true"])) { box-shadow: inset 0 0 0 1px var(--ring); }
 .cv-trows { position: absolute; left: 0; right: 0; top: 0; }
 .cv-node { position: absolute; left: 0; right: 0; height: var(--row); display: flex; align-items: center; gap: 4px; padding-right: 10px; white-space: nowrap; user-select: none; cursor: default; }
 .cv-node:hover { background: var(--accent); }

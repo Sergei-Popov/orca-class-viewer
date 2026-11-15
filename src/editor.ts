@@ -14,16 +14,27 @@ import { installStyles } from './ui/styles'
 
 const ARCHIVES = new Set(['jar', 'war', 'ear', 'jmod', 'aar'])
 
-const locale = globalThis.orca?.locale || navigator.language || 'en'
-const t = stringsFor(locale)
+// Orca's UI language, never the system's: Orca may be in English on a Russian Mac.
+const uiLocale = (): string => globalThis.orca?.locale || 'en'
+
 installStyles()
-document.documentElement.lang = locale
 const toast = new Toast()
-const env: Env = { t, locale, saveAs: globalThis.orca?.files?.saveAs, toast: (text) => toast.show(text) }
+const env: Env = { t: stringsFor(uiLocale()), locale: uiLocale(), saveAs: globalThis.orca?.files?.saveAs, toast: (text) => toast.show(text) }
+document.documentElement.lang = env.locale
 const host = h('div', { className: 'cv-app' })
 document.body.append(host, toast.el)
 
 let view: ClassView | JarView | undefined
+
+/** Orca's language may arrive after this module runs; it is surely in by the first document. */
+function syncLocale(): boolean {
+  const locale = uiLocale()
+  if (locale === env.locale) return false
+  env.locale = locale
+  env.t = stringsFor(locale)
+  document.documentElement.lang = locale
+  return true
+}
 
 function message(title: string, text: string, busy = false): void {
   view = undefined
@@ -45,14 +56,17 @@ document.addEventListener('keydown', (event) => {
   }
 })
 
-message('', t.loading, true)
+message('', env.t.loading, true)
 const api = globalThis.orca?.document
 if (!api) {
-  message(t.errorTitle, t.noHost)
+  message(env.t.errorTitle, env.t.noHost)
 } else {
   let generation = 0
   api.onDidChange(async (doc) => {
     const current = ++generation
+    // Views keep the strings they were made with, so a new language makes new ones.
+    if (syncLocale()) view = undefined
+    const t = env.t
     if (doc.content.kind !== 'bytes') {
       message(t.errorTitle, t.textContent)
       return
