@@ -6,3 +6,20 @@ All notable changes to this plugin are documented here. The format follows
 `[Unreleased]` into the released version.
 
 ## [Unreleased]
+
+### Added
+
+- `.class` files open in Class File Viewer by default, with four tabs: **Outline** (the
+  declarations in Java syntax, with links to each method's bytecode), **Bytecode** (listed like
+  `javap -c -v`), **Structure** (the class file's header, members and attributes) and
+  **Constant pool** (filterable, cross-linked, with what uses each entry).
+- A **Java N** badge for the release a class was compiled for, and badges for classes compiled
+  by Kotlin (with the version from `@Metadata`), Scala, Groovy or Clojure.
+- `.jmod` files open by default, and `.jar`, `.war`, `.ear` and `.aar` files as an option, in a
+  browser of packages and classes: nested classes under their outer class, class roots of web
+  and Spring Boot archives, multi-release versions, archives inside opened in place, previews
+  of resources and an overview with the Java versions of the classes and the manifest.
+- Clear messages for newer, damaged, cut-off and misnamed files; obfuscated names shown with
+  escapes.
+- Find, Copy and Save…; keyboard navigation of the tree.
+- English and Russian, following Orca's language; Orca's light and dark themes.

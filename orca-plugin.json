@@ -1,32 +1,75 @@
 {
   "$schema": "https://raw.githubusercontent.com/stablyai/orca/main/docs/schemas/plugins/orca-plugin.v2.schema.json",
   "manifestVersion": 2,
+  "execution": "sandboxed-ui",
   "id": "class-viewer",
   "name": "Class File Viewer",
   "version": "0.1.0",
-  "description": "Compiled JVM .class files in Orca's editor tabs: decompiled source, bytecode and the constant pool, plus .jar files browsed class by class. Offline, no JDK needed.",
+  "description": "Read compiled JVM .class files in Orca's editor tabs: an outline of the declarations in Java syntax, bytecode listed like javap, the class file's structure and a cross-linked constant pool. .jar, .war, .ear, .aar and .jmod files open as a tree of packages and classes. Offline, no JDK needed. Independent; not affiliated with Oracle.",
+  "author": {
+    "name": "Sergei Popov",
+    "url": "https://github.com/Sergei-Popov"
+  },
+  "repository": "https://github.com/Sergei-Popov/orca-class-viewer",
+  "license": "MIT",
+  "icon": "images/icon.png",
+  "cover": {
+    "path": "images/cover.png",
+    "alt": "A jar with Orca's dark theme: the package tree with nested classes, and the selected class's declarations in Java syntax in the Outline tab."
+  },
+  "screenshots": [
+    {
+      "path": "images/bytecode-light.png",
+      "alt": "The Bytecode tab with Orca's light theme: methods listed like javap -c -v, with instructions, constant pool references, line numbers and locals.",
+      "caption": "Bytecode listed like javap, with links to the constant pool and jump targets.",
+      "theme": "light"
+    },
+    {
+      "path": "images/constant-pool-dark.png",
+      "alt": "The Constant pool tab with Orca's dark theme: a selected Fieldref, the entries it refers to and the methods that use it.",
+      "caption": "A filterable constant pool that shows what refers to each entry.",
+      "theme": "dark"
+    },
+    {
+      "path": "images/multi-release-light.png",
+      "alt": "A multi-release class in a jar with Orca's light theme: the Java 8 badge in the header and a switch between the base class and its Java 11 version.",
+      "caption": "The Java version of every class, and each version of a multi-release class.",
+      "theme": "light"
+    },
+    {
+      "path": "images/jar-overview-light.png",
+      "alt": "A jar's overview with Orca's light theme: class and package counts, a chart of the Java versions, the module, main class and manifest.",
+      "caption": "A jar at a glance: Java versions, module, main class and manifest.",
+      "theme": "light"
+    }
+  ],
   "engines": {
     "orca": ">=1.4.248"
   },
-  "execution": "sandboxed-ui",
   "pluginApi": 1,
   "contributes": {
     "customEditors": [
       {
-        "id": "class-viewer",
+        "id": "class",
         "title": "Class File Viewer",
-        "extensions": [
-          ".class-viewer"
-        ],
-        "entry": "editor/main.ts",
+        "icon": "icons/class.png",
+        "extensions": [".class", ".jmod"],
+        "entry": "src/editor.ts",
+        "priority": "default",
+        "contentKind": "bytes",
+        "frame": "isolated"
+      },
+      {
+        "id": "jar",
+        "title": "Class File Viewer",
+        "icon": "icons/jar.png",
+        "extensions": [".jar", ".war", ".ear", ".aar"],
+        "entry": "src/editor.ts",
+        "priority": "option",
+        "contentKind": "bytes",
         "frame": "isolated"
       }
     ]
   },
-  "author": {
-    "name": "Сергей Попов",
-    "url": "https://github.com/Sergei-Popov"
-  },
-  "repository": "https://github.com/Sergei-Popov/orca-class-viewer",
-  "license": "MIT"
+  "capabilities": []
 }
