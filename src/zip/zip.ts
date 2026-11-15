@@ -50,6 +50,11 @@ export type Zip = {
    * checks out, or a ZIP64 record java.util.zip does not use. `entries` is what java.util.zip reads.
    */
   ambiguous: boolean
+  /**
+   * The end record and its comment end the file. java.util.zip also takes one with bytes after
+   * it, but the java launcher does not, and `java -jar` will not start such a jar.
+   */
+  endExact: boolean
   comment?: string
   /** Unpacks an entry, at most `limit` bytes; checks the CRC when it unpacks all of it. */
   read(entry: ZipEntry, limit?: number): ReadResult
@@ -246,6 +251,7 @@ export function openZip(bytes: Uint8Array): Zip {
     size: bytes.length,
     damaged,
     ambiguous,
+    endExact: end + 22 + commentLength === bytes.length,
     comment,
     read(entry, limit = Infinity) {
       const raw = raws[entry.index]

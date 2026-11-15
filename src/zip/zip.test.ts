@@ -353,3 +353,36 @@ test('takes an entry named like a folder that holds data for a file', () => {
     ]
   )
 })
+
+// A Spring Boot jar stores its libraries uncompressed, last: their own end records sit near the
+// end of the outer one, inside entries, and are no other directory a tool could read.
+test('a fat jar with stored nested jars at the end is not ambiguous', () => {
+  const inner = zip([{ name: 'a/A.class', data: 'x'.repeat(500) }])
+  const outer = zip([
+    { name: 'META-INF/MANIFEST.MF', data: 'Manifest-Version: 1.0\r\n\r\n' },
+    { name: 'BOOT-INF/lib/one.jar', data: inner, method: 0 },
+    { name: 'BOOT-INF/lib/two.jar', data: inner, method: 0 }
+  ])
+  const z = openZip(outer)
+  assert.equal(z.damaged, false)
+  assert.equal(z.ambiguous, false)
+  assert.equal(z.entries.length, 3)
+})
+
+// Review 2, round 2, minor 2: with 100 zero bytes after the end record, java.util.zip still reads
+// the jar (`java -cp` ran it), but the java launcher wants the end record and its comment to end
+// the file, and `java -jar` said "Invalid or corrupt jarfile".
+test('notes whether the end record ends the file, as the java launcher wants', () => {
+  const plain = zip([{ name: 'a.txt', data: 'a' }])
+  assert.equal(openZip(plain).endExact, true)
+  assert.equal(openZip(zip([{ name: 'a.txt', data: 'a' }], { comment: 'built by hand' })).endExact, true)
+  const padded = new Uint8Array(plain.length + 100)
+  padded.set(plain)
+  const z = openZip(padded)
+  assert.equal(z.endExact, false)
+  assert.deepEqual(
+    z.entries.map((e) => e.name),
+    ['a.txt']
+  )
+  assert.equal(z.damaged, false)
+})

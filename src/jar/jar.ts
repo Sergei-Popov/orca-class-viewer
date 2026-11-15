@@ -5,10 +5,10 @@
 // own; META-INF/versions/N copies of a class are listed on the class they replace.
 //
 // Entries are taken the way java.util.zip takes them: by their exact stored names, the last copy
-// of a name winning. A name the JVM would never look up (`x/../a/B.class`, `a\B.class`, a leading
-// `/`) and the earlier copies of a name are not merged into the tree; they are listed under their
-// stored names in a folder of their own, so a crafted jar cannot show a decoy in place of the
-// class that runs.
+// of a name winning; for a name no entry has, the first entry of that name with a `/` after it.
+// A name the JVM would never look up (`x/../a/B.class`, `a\B.class`, a leading `/`) and the copies
+// it does not read are not merged into the tree; they are listed under their stored names in a
+// folder of their own, so a crafted jar cannot show a decoy in place of the class that runs.
 
 import { type Manifest, parseManifest } from './manifest'
 import { type Zip, type ZipEntry, ZipError } from '../zip/zip'
@@ -20,10 +20,11 @@ export type NodeKind = 'root' | 'package' | 'class' | 'folder' | 'file' | 'archi
 export type ClassVersion = { release: number; entry: ZipEntry }
 
 /**
- * Why an entry is listed apart: a name the JVM would not look up, a copy a later one replaces, or
- * a name ending in `/` that holds data (the JVM finds it under the name without the slash).
+ * Why an entry is listed apart: a name the JVM would not look up, a copy a later one replaces, a
+ * name ending in `/` that holds data (the JVM finds it under the name without the slash), or a
+ * later entry of such a name, which the JVM never reads, as it takes the first.
  */
-export type EntryIssue = 'unusual' | 'shadowed' | 'folder'
+export type EntryIssue = 'unusual' | 'shadowed' | 'folder' | 'unread'
 
 export type JarNode = {
   /** Unique within the jar. */
@@ -65,8 +66,10 @@ export type JarModel = {
    * may be a later copy in other capitals.
    */
   manifestExact: boolean
-  /** Releases with a META-INF/versions/N folder. */
+  /** Releases with a META-INF/versions/N folder that holds files, as java.util.jar registers them. */
   versions: number[]
+  /** The manifest says Multi-Release: true. Only then does the JVM use the versions, and the
+   *  tree attach them to their classes. */
   multiRelease: boolean
   /** Archives inside, which open as jars of their own. */
   nested: ZipEntry[]
@@ -80,6 +83,8 @@ export type JarModel = {
   /** Entries named like folders that hold data. When no entry has the name without the slash,
    *  the JVM reads such an entry under it, and a class there is listed in `classes`. */
   folderData: ZipEntry[]
+  /** Later entries of a name like a folder whose first entry the JVM reads instead. */
+  unread: ZipEntry[]
 }
 
 /** Roots whose classes are not at the top of the archive. */
@@ -94,13 +99,14 @@ const MAX_OUTER_NAME = 1024
 
 /**
  * A META-INF/versions/N/ copy as java.util.jar.JarFile finds it: it looks up the folder named by
- * the release number itself, so `09` or `017` is never used, and releases before 9 are not either.
+ * the release number itself, so `09` or `017` is never used, and releases before 8, its base
+ * release, are not either (JarFile.getVersionedEntry, Java 21).
  */
 export function versionOf(path: string): { release: number; rest: string } | undefined {
   const v = VERSIONED.exec(path)
   if (!v) return undefined
   const release = Number(v[1])
-  return String(release) === v[1] && release >= 9 ? { release, rest: v[2] } : undefined
+  return String(release) === v[1] && release >= 8 ? { release, rest: v[2] } : undefined
 }
 
 /** A name compared as java.util.zip compares META-INF names: ASCII letters in any case, nothing else. */
@@ -184,13 +190,33 @@ function markClasses(top: Dir): void {
 export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
   // The JVM looks entries up by their stored names, and a later copy of a name replaces an earlier one.
   const byName = new Map<string, ZipEntry>()
-  for (const entry of zip.entries) byName.set(entry.name, entry)
+  // Of the entries named `x/`, java.util.zip (Java 21) gives the first for `x` when no entry is named `x`.
+  const firstSlashed = new Map<string, ZipEntry>()
+  for (const entry of zip.entries) {
+    byName.set(entry.name, entry)
+    if (entry.name.endsWith('/') && !firstSlashed.has(entry.name)) firstSlashed.set(entry.name, entry)
+  }
+  /** Named `x/` with no entry named `x`: the JVM reads its first entry for `x`. */
+  const readBySlash = (entry: ZipEntry) => entry.name.endsWith('/') && !byName.has(entry.name.slice(0, -1))
+  /** The name the JVM reads `entry` under as a file, or undefined when it never does. */
+  const readAs = (entry: ZipEntry): string | undefined => {
+    if (entry.dir) return undefined
+    if (!entry.name.endsWith('/')) return byName.get(entry.name) === entry && isCanonical(entry) ? entry.name : undefined
+    const name = entry.name.slice(0, -1)
+    return readBySlash(entry) && firstSlashed.get(entry.name) === entry && name === entry.path ? name : undefined
+  }
   const unusual: ZipEntry[] = []
   const shadowed: ZipEntry[] = []
   const folderData: ZipEntry[] = []
+  const unread: ZipEntry[] = []
   const top = newDir('')
   for (const entry of zip.entries) {
-    if (byName.get(entry.name) !== entry) {
+    if (readBySlash(entry)) {
+      if (firstSlashed.get(entry.name) !== entry) {
+        if (!entry.dir) unread.push(entry)
+        continue
+      }
+    } else if (byName.get(entry.name) !== entry) {
       if (!entry.dir) shadowed.push(entry)
       continue
     }
@@ -342,11 +368,12 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
 
   // Entries listed apart, in archive order, under their stored names.
   const apartNodes = new Map<ZipEntry, JarNode>()
-  if (unusual.length || shadowed.length || folderData.length) {
+  if (unusual.length || shadowed.length || folderData.length || unread.length) {
     const apart = [
       ...unusual.map((e) => [e, 'unusual'] as const),
       ...shadowed.map((e) => [e, 'shadowed'] as const),
-      ...folderData.map((e) => [e, 'folder'] as const)
+      ...folderData.map((e) => [e, 'folder'] as const),
+      ...unread.map((e) => [e, 'unread'] as const)
     ].sort((a, b) => a[0].index - b[0].index)
     const children: JarNode[] = apart.map(([entry, issue]) => {
       const isClass = entry.path.endsWith('.class')
@@ -361,8 +388,8 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
   // java.util.zip finds `a/B.class/` under `a/B.class` when no entry has that exact name, so a
   // class loader reads it: such a class is the class of that name, though it is listed apart.
   for (const entry of folderData) {
-    const path = entry.name.slice(0, -1)
-    if (path !== entry.path || byName.has(path) || !path.endsWith('.class') || path.startsWith('META-INF/')) continue
+    const path = readAs(entry)
+    if (path === undefined || !path.endsWith('.class') || path.startsWith('META-INF/')) continue
     const root = roots.find((r) => path.startsWith(r)) ?? (kind === 'jmod' ? undefined : '')
     const node = apartNodes.get(entry)
     if (root !== undefined && node) addClass(path.slice(root.length, -'.class'.length), entry, root, node)
@@ -387,24 +414,31 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
   }
   const multiRelease = manifest?.main.get('Multi-Release')?.trim().toLowerCase() === 'true'
 
-  // META-INF/versions/N/… classes are listed on the class they replace.
+  // java.util.jar registers a release for each entry under META-INF/versions/N/ not named like a
+  // folder, and looks a class up in the registered releases only.
   const versionSet = new Set<number>()
+  for (const entry of zip.entries) {
+    const v = entry.name.endsWith('/') ? undefined : versionOf(entry.name)
+    if (v) versionSet.add(v.release)
+  }
   let moduleInfo: ModuleInfo | undefined
   // A jmod keeps its classes, module-info.class included, under classes/.
   const topModule = classes.get('module-info')?.find((r) => r.root === (kind === 'jmod' ? 'classes/' : ''))
   if (topModule) moduleInfo = { entry: topModule.entry, nodeId: topModule.node.id }
-  for (const entry of zip.entries) {
-    const v = versionOf(entry.path)
-    if (!v || byName.get(entry.name) !== entry || !isCanonical(entry)) continue
+  // In a multi-release jar, META-INF/versions/N/… classes are listed on the class they replace;
+  // without Multi-Release: true the JVM does not use them, and they stay files under META-INF.
+  for (const entry of multiRelease ? zip.entries : []) {
+    const path = readAs(entry)
+    const v = path === undefined ? undefined : versionOf(path)
+    if (!v || !versionSet.has(v.release) || !v.rest.endsWith('.class')) continue
     const release = v.release
-    versionSet.add(release)
-    if (!v.rest.endsWith('.class')) continue
     const name = v.rest.slice(0, -'.class'.length)
     const base = classes.get(name)?.find((r) => r.root === '')
     if (base) (base.node.versions ??= []).push({ release, entry })
     // Libraries that still run on Java 8 keep their module descriptor under versions/9.
-    else if (name === 'module-info' && multiRelease && !topModule && release >= (moduleInfo?.release ?? 0)) {
-      moduleInfo = { entry, nodeId: `c:${entry.path}`, release }
+    else if (name === 'module-info' && !topModule && release >= (moduleInfo?.release ?? 0)) {
+      // One named like a folder is listed apart.
+      moduleInfo = { entry, nodeId: entry.name.endsWith('/') ? `x:${entry.index}` : `c:${entry.path}`, release }
     }
   }
   for (const list of classes.values()) for (const r of list) r.node.versions?.sort((a, b) => a.release - b.release)
@@ -427,7 +461,8 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
     moduleInfo,
     unusual,
     shadowed,
-    folderData
+    folderData,
+    unread
   }
 }
 

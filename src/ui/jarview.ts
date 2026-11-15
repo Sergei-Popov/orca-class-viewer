@@ -197,15 +197,16 @@ export class JarView {
     const notices: string[] = []
     if (m.zip.damaged) notices.push(t.zipDamaged)
     if (m.zip.ambiguous) notices.push(t.zipAmbiguous)
-    if (m.unusual.length || m.shadowed.length || m.folderData.length) {
+    if (m.unusual.length || m.shadowed.length || m.folderData.length || m.unread.length) {
       const parts = [
         m.unusual.length ? t.unusualNames(m.unusual.length) : '',
         m.shadowed.length ? t.shadowedCopies(m.shadowed.length) : '',
-        m.folderData.length ? t.folderEntries(m.folderData.length) : ''
+        m.folderData.length ? t.folderEntries(m.folderData.length) : '',
+        m.unread.length ? t.unreadCopies(m.unread.length) : ''
       ].filter(Boolean)
       const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} ${t.and} ${parts[parts.length - 1]}` : parts[0]
       notices.push(fill(t.unusualNotice, { list }))
-      if (m.folderData.length) notices.push(t.folderDataNotice)
+      if (m.folderData.length || m.unread.length) notices.push(t.folderDataNotice)
     }
     this.notice.hidden = notices.length === 0
     this.notice.replaceChildren(...(notices.length ? [svg(icon('warning')), h('span', {}, notices.join(' '))] : []))
@@ -335,7 +336,7 @@ export class JarView {
     label.append(highlight(this.nodeLabel(node), level.filter))
     row.append(label)
     if (node.issue && node.id !== UNUSUAL_ID) {
-      const note = node.issue === 'shadowed' ? t.entryShadowed : node.issue === 'folder' ? t.entryFolderData : t.entryUnusual
+      const note = { shadowed: t.entryShadowed, folder: t.entryFolderData, unread: t.entryUnread, unusual: t.entryUnusual }[node.issue]
       row.append(h('span', { className: 'cv-note t-bad', title: note }, note))
     }
     if (node.versions?.length) {
@@ -840,14 +841,19 @@ export class JarView {
         info.push([label, key === 'Main-Class' || key === 'Start-Class' || key.endsWith('Agent-Class') || key === 'Premain-Class' ? classLink(value) : h('span', { className: 'cv-mono' }, displayName(value))])
       }
     }
-    if (m.multiRelease || m.versions.length) info.push([t.multiRelease, fill(t.multiReleaseValue, { list: m.versions.map((v) => `Java ${v}`).join(', ') || '—' })])
+    const releases = m.versions.map((v) => `Java ${v}`).join(', ')
+    // Without Multi-Release: true the JVM takes the base classes only, as shaded jars often show.
+    if (m.multiRelease) info.push([t.multiRelease, fill(t.multiReleaseValue, { list: releases || '—' })])
+    else if (releases) info.push([t.multiRelease, fill(t.multiReleaseUnused, { list: releases })])
     if (m.manifestEntry) {
       const node = level.byId.get(`f:${m.manifestEntry.path}`)
       if (node) {
         const b = h('button', { className: 'cv-a cv-mono', type: 'button' }, displayName(m.manifestEntry.name))
         b.addEventListener('click', () => this.select(node.id))
-        // java.util.jar reads a manifest named in other capitals, but `java -jar` wants the exact name.
-        info.push([t.manifest, m.manifestExact ? b : h('span', {}, b, h('span', { className: 'cv-hint' }, `  ${t.manifestNotExact}`))])
+        // java.util.jar reads a manifest named in other capitals, but `java -jar` wants the exact
+        // name, and an archive that ends with its end record.
+        const hint = !m.manifestExact ? t.manifestNotExact : !m.zip.endExact ? t.manifestBytesAfterEnd : undefined
+        info.push([t.manifest, hint ? h('span', {}, b, h('span', { className: 'cv-hint' }, `  ${hint}`)) : b])
       }
     }
     if (info.length) {
