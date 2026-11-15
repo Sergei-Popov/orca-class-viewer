@@ -19,7 +19,7 @@
         { "clickText": "Telescope" },
         { "wheel": [200, 140, -2000] },
         { "wheel": [200, 140, 192] },
-        { "wheel": [300, 400, 360] },
+        { "wheel": [300, 400, 278] },
         { "hover": [400, 20] }
       ],
       "origin": { "x": 0, "y": 0 }
@@ -29,56 +29,76 @@
     {
       "out": "images/shot-1-bytecode.png",
       "headline": "Bytecode with every constant explained",
-      "alt": "The Bytecode tab: a method's instructions like javap -c -v, constant pool references explained, line numbers and locals.",
+      "alt": "The Bytecode tab on Telescope.point(): stack=4, locals=4, args_size=2, and each constant explained in a comment.",
       "stage": {
         "file": ".orca/listing/samples/observatory-2.0.0.jar",
         "waitFor": { "text": "Telescope" },
         "act": [
+          { "drag": [[322, 300], [240, 300]] },
           { "clickText": "Telescope" },
           { "clickText": "Bytecode", "exact": false },
           { "select": "Go to method…", "option": "point" },
-          { "hover": [150, 520] }
+          { "wait": 1600 },
+          { "wheel": [600, 400, 36] },
+          { "hover": [700, 18] }
         ]
       }
     },
     {
       "out": "images/shot-2-overview.png",
       "headline": "A whole jar at a glance",
-      "alt": "A jar's overview: 80 classes in 9 packages, a chart of Java versions, the module, Main-Class and multi-release versions.",
+      "alt": "A jar's overview: 84 classes, 9 packages, 1 resource; 83 compiled for Java 21, 1 for Java 8; its module and main class.",
       "stage": {
         "file": ".orca/listing/samples/observatory-2.0.0.jar",
-        "waitFor": { "text": "Telescope" }
+        "waitFor": { "text": "Telescope" },
+        "act": [{ "drag": [[322, 300], [240, 300]] }, { "hover": [700, 18] }]
       }
     },
     {
       "out": "images/shot-3-constant-pool.png",
       "headline": "Follow any constant to its users",
-      "alt": "The Constant pool tab: a selected Methodref, the entries it refers to, and the instructions and methods that use it.",
+      "alt": "The Constant pool tab, 4 Methodrefs: #67 Optics.limitingMagnitude refers to #68 and #69 and is used in observe at offset 12.",
       "stage": {
         "file": ".orca/listing/samples/observatory-2.0.0.jar",
         "waitFor": { "text": "Telescope" },
-        "act": [{ "clickText": "Telescope" }, { "clickText": "Constant pool", "exact": false }, { "hover": [150, 520] }]
+        "act": [
+          { "drag": [[322, 300], [240, 300]] },
+          { "clickText": "Telescope" },
+          { "clickText": "Constant pool", "exact": false },
+          { "select": "Type", "option": "Methodref" },
+          { "fill": "Filter constants", "value": "telescope/" },
+          { "clickText": "#67" },
+          { "wait": 1600 },
+          { "hover": [700, 18] }
+        ]
       }
     },
     {
       "out": "images/shot-4-structure.png",
       "headline": "Every byte of the class, mapped",
-      "alt": "The Structure tab: the class header, field and method tables, and each attribute with its offset and length, decoded or as hex.",
+      "alt": "The Structure tab: Telescope's class header (6,880 bytes, CA FE BA BE, version 65.0) and the table of its 8 fields.",
       "stage": {
         "file": ".orca/listing/samples/observatory-2.0.0.jar",
         "waitFor": { "text": "Telescope" },
-        "act": [{ "clickText": "Telescope" }, { "clickText": "Structure" }, { "hover": [150, 520] }]
+        "act": [{ "drag": [[322, 300], [240, 300]] }, { "clickText": "Telescope" }, { "clickText": "Structure" }, { "hover": [700, 18] }]
       }
     },
     {
       "out": "images/shot-5-multi-release.png",
       "headline": "Multi-release jars, version by version",
-      "alt": "A multi-release class: a switch between the Java 8 base class and its Java 17 version. Shown in Orca's light theme.",
+      "alt": "Units in a multi-release jar, switched from Base to Java 17+: its Java 17 copy, outlined. Shown in Orca's light theme.",
       "stage": {
         "file": ".orca/listing/samples/observatory-2.0.0.jar",
         "theme": "light",
         "waitFor": { "text": "Telescope" },
-        "act": [{ "clickText": "util", "count": 2 }, { "clickText": "Units" }, { "clickText": "Java 17+" }, { "hover": [150, 520] }]
+        "act": [
+          { "drag": [[322, 300], [240, 300]] },
+          { "clickText": "util", "offset": [-30, 0] },
+          { "clickText": "Units" },
+          { "clickText": "Java 17+" },
+          { "wheel": [700, 400, 8] },
+          { "hover": [700, 18] }
+        ]
       }
     }
   ]
