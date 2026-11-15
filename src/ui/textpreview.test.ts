@@ -39,7 +39,7 @@ test('highlights lines of megabytes of blanks in linear time', () => {
 
 // Review 1, finding 21: a text entry over 2 MiB showed as a 4 KiB 'Binary file' hex dump.
 test('decodes the start of a large text entry, leaving out a character cut in two', () => {
-  const bytes = new TextEncoder().encode('﻿{"name": "Ωmega"}')
+  const bytes = new TextEncoder().encode(`${String.fromCharCode(0xfeff)}{"name": "Ωmega"}`)
   const cut = bytes.subarray(0, bytes.indexOf(0xce) + 1)
   assert.equal(decodeText(cut, 'json', true), '{"name": "')
   assert.equal(decodeText(bytes, 'json'), '{"name": "Ωmega"}')

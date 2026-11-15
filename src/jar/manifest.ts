@@ -11,7 +11,9 @@ export function parseManifest(text: string): Manifest {
   const sections: Map<string, string>[] = [new Map()]
   let current = sections[0]
   let last: string | undefined
-  for (const line of text.replace(/^﻿/, '').split(/\r\n|\r|\n/)) {
+  // A byte order mark first, as some editors write it, is not part of the first name.
+  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+  for (const line of body.split(/\r\n|\r|\n/)) {
     if (line === '') {
       if (current.size) sections.push((current = new Map()))
       last = undefined
