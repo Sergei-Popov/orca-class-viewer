@@ -1,32 +1,79 @@
 {
   "$schema": "https://raw.githubusercontent.com/stablyai/orca/main/docs/schemas/plugins/orca-plugin.v2.schema.json",
   "manifestVersion": 2,
+  "execution": "sandboxed-ui",
   "id": "class-viewer",
   "name": "Class File Viewer",
   "version": "0.1.0",
-  "description": "Compiled JVM .class files in Orca's editor tabs: decompiled source, bytecode and the constant pool, plus .jar files browsed class by class. Offline, no JDK needed.",
+  "description": "Read compiled .class files in Orca's editor tabs: declarations in Java syntax, bytecode listed like javap, the file's structure and a linked constant pool. Jars, wars, ears, aars and jmods open as a tree of packages and classes. Offline, no JDK needed. Independent; not affiliated with Oracle.",
+  "author": {
+    "name": "Sergei Popov",
+    "url": "https://github.com/Sergei-Popov"
+  },
+  "repository": "https://github.com/Sergei-Popov/orca-class-viewer",
+  "license": "MIT",
+  "icon": "images/icon.png",
+  "cover": {
+    "path": "images/cover.png",
+    "alt": "Class File Viewer on a jar: the package tree with Telescope selected, and its declarations in Java syntax with a Java 21 badge."
+  },
+  "screenshots": [
+    {
+      "path": "images/shot-1-bytecode.png",
+      "alt": "The Bytecode tab on Telescope.point(): stack=4, locals=4, args_size=2, and each constant explained in a comment."
+    },
+    {
+      "path": "images/shot-2-overview.png",
+      "alt": "A jar's overview: 84 classes, 9 packages, 1 resource; 83 compiled for Java 21, 1 for Java 8; its module and main class."
+    },
+    {
+      "path": "images/shot-3-constant-pool.png",
+      "alt": "The Constant pool tab, 4 Methodrefs: #67 Optics.limitingMagnitude refers to #68 and #69 and is used in observe at offset 12."
+    },
+    {
+      "path": "images/shot-4-structure.png",
+      "alt": "The Structure tab: Telescope's class header (6,880 bytes, CA FE BA BE, version 65.0) and the table of its 8 fields."
+    },
+    {
+      "path": "images/shot-5-multi-release.png",
+      "alt": "Units in a multi-release jar, switched from Base to Java 17+: its Java 17 copy, outlined. Shown in Orca's light theme."
+    }
+  ],
   "engines": {
     "orca": ">=1.4.248"
   },
-  "execution": "sandboxed-ui",
   "pluginApi": 1,
   "contributes": {
     "customEditors": [
       {
-        "id": "class-viewer",
+        "id": "class",
         "title": "Class File Viewer",
+        "icon": "icons/class.png",
         "extensions": [
-          ".class-viewer"
+          ".class",
+          ".jmod"
         ],
-        "entry": "editor/main.ts",
+        "entry": "src/editor.ts",
+        "priority": "default",
+        "contentKind": "bytes",
+        "frame": "isolated"
+      },
+      {
+        "id": "jar",
+        "title": "Class File Viewer",
+        "icon": "icons/jar.png",
+        "extensions": [
+          ".jar",
+          ".war",
+          ".ear",
+          ".aar"
+        ],
+        "entry": "src/editor.ts",
+        "priority": "option",
+        "contentKind": "bytes",
         "frame": "isolated"
       }
     ]
   },
-  "author": {
-    "name": "Сергей Попов",
-    "url": "https://github.com/Sergei-Popov"
-  },
-  "repository": "https://github.com/Sergei-Popov/orca-class-viewer",
-  "license": "MIT"
+  "capabilities": []
 }
