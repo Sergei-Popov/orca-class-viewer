@@ -9,10 +9,10 @@ import { type LanguageInfo, detectLanguage } from '../classfile/language'
 import { binaryName, displayName, hasHiddenCharacters } from '../classfile/names'
 import { buildOutline } from '../classfile/outline'
 import { NEWEST_KNOWN_MAJOR, javaRelease } from '../classfile/versions'
-import { type Seg, classListing } from '../bytecode/listing'
+import { MAX_LISTED_ROWS, type Seg, classListing } from '../bytecode/listing'
 import { CodeView, type LinkData, type Span, type ViewLine } from './codeview'
 import { copyText, h, storageGet, storageSet, svg } from './dom'
-import { type Env, fill, hexDump, reasonFor, reasonText, saveFile, sizeText } from './env'
+import { type Env, fill, hexDump, reasonFor, reasonText, saveFile, shortcuts, sizeText } from './env'
 import { icon } from './icons'
 import { type JavaState, type TokenKind, tokenizeJava } from './java'
 import { PoolTable } from './pooltable'
@@ -111,9 +111,10 @@ export class ClassView {
     this.header = h('div', { className: 'cv-bar' })
     this.notices = h('div', { className: 'cv-notices' })
     this.tabBar = h('div', { className: 'cv-tabs', role: 'tablist', 'aria-label': t.tabsLabel })
-    this.findInput = h('input', { type: 'search', placeholder: t.find, 'aria-label': t.find, title: t.findHint, spellcheck: 'false' })
+    const keys = shortcuts()
+    this.findInput = h('input', { type: 'search', placeholder: t.find, 'aria-label': t.find, title: fill(t.findHint, keys), spellcheck: 'false' })
     this.findCount = h('span', { className: 'cv-find-count', 'aria-live': 'polite' })
-    const prev = this.iconButton('up', t.prevMatch, () => this.stepFind(-1))
+    const prev = this.iconButton('up', fill(t.prevMatch, keys), () => this.stepFind(-1))
     const next = this.iconButton('down', t.nextMatch, () => this.stepFind(1))
     this.findBox = h('div', { className: 'cv-tools' }, h('label', { className: 'cv-search' }, svg(icon('search')), this.findInput), this.findCount, prev, next)
     this.methodSelect = h('select', { className: 'cv-select', 'aria-label': t.goToMethod })
@@ -293,11 +294,9 @@ export class ClassView {
     return outline.lines.map((line) => {
       let spans = javaSpans(line.text, state)
       const target = line.target
-      if (target?.kind === 'method' && target.owner === cls.name) {
-        const paren = line.text.indexOf('(')
-        let start = paren
-        while (start > 0 && /[\p{L}\p{N}_$\\]/u.test(line.text[start - 1])) start--
-        if (paren > start) spans = linkRange(spans, start, paren, { kind: 'method', index: target.index }, env.t.showBytecode)
+      // A method's name, whole, on its declaration line only; annotation lines name other types.
+      if (target?.kind === 'method' && target.owner === cls.name && line.name) {
+        spans = linkRange(spans, line.name.from, line.name.to, { kind: 'method', index: target.index }, env.t.showBytecode)
       }
       // Other classes of the archive open from their names: types, imports, nested classes.
       if (hasClass && openClass) {
@@ -312,7 +311,14 @@ export class ClassView {
 
   private listingLines(cls: ClassFile): ViewLine[] {
     const t = this.env.t
-    return classListing(cls).map((line) => {
+    const listing = classListing(cls)
+    let cut = 0
+    const lines = listing.map((line): ViewLine => {
+      if (line.cut !== undefined) {
+        cut++
+        const text = `  Code: ${fill(t.listingCutLine, { size: t.bytes(line.cut) })}`
+        return { text, spans: [{ text: '  Code: ', cls: SEG_CLASS.key }, { text: text.slice(8), cls: SEG_CLASS.comment }] }
+      }
       const spans: Span[] = []
       for (const seg of line.segs) {
         if (seg.kind === 'java') {
@@ -327,6 +333,11 @@ export class ClassView {
       }
       return { text: line.segs.map((s) => s.text).join(''), spans, anchor: line.anchor }
     })
+    if (cut) {
+      const locale = this.env.locale
+      this.notice('cv-info', 'info', t.listingCutTitle, fill(t.listingCutText, { n: MAX_LISTED_ROWS.toLocaleString(locale), m: cut.toLocaleString(locale) }))
+    }
+    return lines
   }
 
   private fillMethodSelect(cls: ClassFile): void {
@@ -431,14 +442,16 @@ export class ClassView {
     this.header.append(h('span', { className: 'cv-spacer' }), h('span', { className: 'cv-summary' }, sizeText(this.env, cls.size)))
   }
 
+  private notice(tone: string, iconName: 'warning' | 'info', title: string | undefined, text: string, detail?: string): void {
+    const body = h('span', { title: detail })
+    if (title) body.append(h('strong', {}, title))
+    body.append(text)
+    this.notices.append(h('div', { className: `cv-notice ${tone}` }, svg(icon(iconName)), body))
+  }
+
   private renderNotices(cls: ClassFile): void {
     const t = this.env.t
-    const notice = (tone: string, iconName: 'warning' | 'info', title: string | undefined, text: string, detail?: string) => {
-      const body = h('span', { title: detail })
-      if (title) body.append(h('strong', {}, title))
-      body.append(text)
-      this.notices.append(h('div', { className: `cv-notice ${tone}` }, svg(icon(iconName)), body))
-    }
+    const notice = this.notice.bind(this)
     const release = javaRelease(cls.major, cls.minor)
     if (release.unknown) notice('', 'warning', undefined, fill(t.unknownMajor, { major: cls.major }))
     else if (release.newer) {

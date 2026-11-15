@@ -33,7 +33,19 @@ export type ListingLine = {
   anchor?: string
   /** The method this line belongs to. */
   method?: number
+  /** On the line that stands for a method's code left out of the listing: its length in bytes. */
+  cut?: number
 }
+
+/**
+ * The most rows one Bytecode tab lists: instructions plus the rows of their tables. Past it,
+ * methods keep their declaration and flags, but their code is left out: 300 methods of 64 KiB
+ * would make tens of millions of lines.
+ */
+export const MAX_LISTED_ROWS = 1_000_000
+
+/** What is left of the rows a listing may still take; `cut` once a method did not fit. */
+export type ListingBudget = { left: number; cut: boolean }
 
 const s = (text: string, kind: SegKind = 'plain', ref?: number): Seg => (ref === undefined ? { text, kind } : { text, kind, ref })
 
@@ -197,6 +209,8 @@ function attributeListing(cls: ClassFile, attributes: AttributeInfo[], indent: s
     // Skips by what was read: a damaged Code attribute is Raw and is listed with its error.
     if (skip.has(a.value.kind)) continue
     const v = a.value
+    // An attribute the JVM does not know may be named anything, controls and bidi marks included.
+    const name = displayName(a.name)
     switch (v.kind) {
       case 'Exceptions':
         line(s(`${indent}Exceptions:`, 'key'))
@@ -206,17 +220,17 @@ function attributeListing(cls: ClassFile, attributes: AttributeInfo[], indent: s
         line(s(`${indent}Signature: `, 'key'), s(`#${v.index}`, 'cp', v.index), s(`  // ${displayName(pool.str(v.index))}`, 'comment'))
         break
       case 'Annotations':
-        line(s(`${indent}${a.name}:`, 'key'))
+        line(s(`${indent}${name}:`, 'key'))
         for (const ann of v.annotations) line(s(`${indent}  `), s(annotationText(ann, pool, namer), 'java'))
         break
       case 'ParameterAnnotations':
-        line(s(`${indent}${a.name}:`, 'key'))
+        line(s(`${indent}${name}:`, 'key'))
         v.parameters.forEach((list, i) => {
           line(s(`${indent}  parameter ${i}: `), s(list.map((ann) => annotationText(ann, pool, namer)).join(' ') || '—', 'java'))
         })
         break
       case 'TypeAnnotations':
-        line(s(`${indent}${a.name}:`, 'key'))
+        line(s(`${indent}${name}:`, 'key'))
         for (const ann of v.annotations) {
           line(s(`${indent}  `), s(annotationText(ann.annotation, pool, namer), 'java'), s(`  // ${ann.target}`, 'comment'))
         }
@@ -231,20 +245,75 @@ function attributeListing(cls: ClassFile, attributes: AttributeInfo[], indent: s
         line(s(`${indent}ConstantValue: `, 'key'), s(`#${v.index}`, 'cp', v.index), s(`  // ${pool.literal(v.index)}`, 'comment'))
         break
       case 'Marker':
-        line(s(`${indent}${a.name}: true`, 'key'))
+        line(s(`${indent}${name}: true`, 'key'))
         break
       case 'AnnotationDefault':
         line(s(`${indent}AnnotationDefault: `, 'key'))
         break
       default:
-        line(s(`${indent}${a.name}: `, 'key'), s(`${a.length} bytes${a.error ? ` — ${a.error}` : ''}`, a.error ? 'bad' : 'comment'))
+        line(s(`${indent}${name}: `, 'key'), s(`${a.length} bytes${a.error ? ` — ${a.error}` : ''}`, a.error ? 'bad' : 'comment'))
     }
   }
   return out
 }
 
-/** The listing of one method. */
-export function methodListing(cls: ClassFile, index: number): ListingLine[] {
+/** Rows a method's code takes in the listing: its instructions and the entries of its tables. */
+function codeRows(code: { exceptions: unknown[]; attributes: AttributeInfo[] }, instructions: number): number {
+  let rows = instructions + code.exceptions.length
+  for (const a of code.attributes) {
+    const v = a.value
+    if (v.kind === 'LineNumberTable') rows += v.lines.length
+    else if (v.kind === 'LocalVariableTable' || v.kind === 'LocalVariableTypeTable') rows += v.variables.length
+    else if (v.kind === 'StackMapTable') rows += v.frames.length
+  }
+  return rows
+}
+
+type Variable = { start: number; length: number; slot: number; nameIndex: number }
+type Range = { from: number; to: number; order: number; nameIndex: number }
+
+/** How many ranges of one slot, starting at or before an instruction, a lookup looks at. */
+const LOOK_BACK = 16
+
+/**
+ * The name of a local variable at an instruction, from a LocalVariableTable indexed once per
+ * method by slot and start: a scan of the whole table per instruction is quadratic in a crafted
+ * method. Of the ranges that hold the instruction, the table's first one wins.
+ */
+export function localNames(pool: ConstantPool, vars: readonly Variable[] | undefined): (slot: number, pc: number) => string | undefined {
+  if (!vars?.length) return () => undefined
+  const bySlot = new Map<number, Range[]>()
+  vars.forEach((v, order) => {
+    // A store names the variable that starts right after it: up to 4 bytes before its range.
+    const range = { from: v.start - 4, to: v.start + v.length, order, nameIndex: v.nameIndex }
+    const list = bySlot.get(v.slot)
+    if (list) list.push(range)
+    else bySlot.set(v.slot, [range])
+  })
+  for (const list of bySlot.values()) list.sort((a, b) => a.from - b.from || a.order - b.order)
+  return (slot, pc) => {
+    const list = bySlot.get(slot)
+    if (!list) return undefined
+    // The ranges from `lo` on start after pc.
+    let lo = 0
+    let hi = list.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (list[mid].from <= pc) lo = mid + 1
+      else hi = mid
+    }
+    // javac never overlaps ranges of a slot, so the nearest few are enough.
+    let best: Range | undefined
+    for (let i = lo - 1; i >= 0 && i >= lo - LOOK_BACK; i--) {
+      const r = list[i]
+      if (pc < r.to && (!best || r.order < best.order)) best = r
+    }
+    return best ? pool.utf8(best.nameIndex) : undefined
+  }
+}
+
+/** The listing of one method. With a budget, its code is left out once the listing is full. */
+export function methodListing(cls: ClassFile, index: number, budget?: ListingBudget): ListingLine[] {
   const m: Member = cls.methods[index]
   const pool = cls.pool
   const namer = makeNamer(cls, true)
@@ -256,17 +325,20 @@ export function methodListing(cls: ClassFile, index: number): ListingLine[] {
   const code = findAttribute(m.attributes, 'Code')
   if (code) {
     const c = code.value.code
-    const instructions = disassemble(c.code)
+    const instructions = budget?.cut ? undefined : disassemble(c.code)
+    if (budget && instructions) {
+      const rows = codeRows(c, instructions.length)
+      if (rows > budget.left) budget.cut = true
+      else budget.left -= rows
+    }
+    if (!instructions || budget?.cut) {
+      out.push({ segs: [s('  Code: ', 'key'), s(`${c.code.length} bytes, not listed`, 'comment')], method: index, cut: c.code.length })
+      append(out, attributeListing(cls, m.attributes, '  ', index, new Set(['Code'])))
+      return out
+    }
     const targets = branchTargets(instructions)
     for (const e of c.exceptions) targets.add(e.handler)
-    const lvt = findAttribute(c.attributes, 'LocalVariableTable')
-    const localName = (slot: number, pc: number) => {
-      const vars = lvt?.value.variables
-      if (!vars) return undefined
-      // A store names the variable that starts right after it.
-      const v = vars.find((x) => x.slot === slot && pc >= x.start - 4 && pc < x.start + x.length)
-      return v ? pool.utf8(v.nameIndex) : undefined
-    }
+    const localName = localNames(pool, findAttribute(c.attributes, 'LocalVariableTable')?.value.variables)
     line(s('  Code:', 'key'))
     const args = argsSize(m)
     line(s(`    stack=${c.maxStack}, locals=${c.maxLocals}${args === undefined ? '' : `, args_size=${args}`}`, 'comment'))
@@ -290,7 +362,7 @@ export function methodListing(cls: ClassFile, index: number): ListingLine[] {
         line(s('    LineNumberTable:', 'key'))
         for (const l of v.lines) line(s(`      line ${l.line}: `), s(String(l.start), 'jump', l.start))
       } else if (v.kind === 'LocalVariableTable' || v.kind === 'LocalVariableTypeTable') {
-        line(s(`    ${a.name}:`, 'key'))
+        line(s(`    ${displayName(a.name)}:`, 'key'))
         line(s('      Start  Length  Slot  Name   Signature', 'comment'))
         for (const x of v.variables) {
           line(
@@ -350,12 +422,17 @@ function append(out: ListingLine[], lines: ListingLine[]): void {
   for (const l of lines) out.push(l)
 }
 
-/** The whole Bytecode tab: every method, a blank line between them. */
-export function classListing(cls: ClassFile): ListingLine[] {
+/**
+ * The whole Bytecode tab: every method, a blank line between them. Once `limit` rows are listed,
+ * the remaining methods keep their declaration, flags and attributes, and a line marked `cut`
+ * stands for their code, so "Go to method" still finds them.
+ */
+export function classListing(cls: ClassFile, limit = MAX_LISTED_ROWS): ListingLine[] {
   const out: ListingLine[] = []
+  const budget: ListingBudget = { left: limit, cut: false }
   cls.methods.forEach((_, i) => {
     if (i) out.push({ segs: [s('')] })
-    append(out, methodListing(cls, i))
+    append(out, methodListing(cls, i, budget))
   })
   return out
 }

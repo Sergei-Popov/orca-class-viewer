@@ -78,3 +78,18 @@ export function hexDump(bytes: Uint8Array, limit = 256): string {
 }
 
 export { fill }
+
+/** The platform the frame runs on, as the browser names it: `MacIntel`, `Win32`, `macOS`, `Linux x86_64`. */
+function platformName(): string {
+  if (typeof navigator === 'undefined') return ''
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } }
+  return nav.userAgentData?.platform || nav.platform || nav.userAgent || ''
+}
+
+/**
+ * Key names for the hints, as the platform writes them (the editor takes ⌘ and Ctrl alike):
+ * `{ find: '⌘F', back: '⇧Enter' }` on a Mac, `{ find: 'Ctrl+F', back: 'Shift+Enter' }` elsewhere.
+ */
+export function shortcuts(platform = platformName()): { find: string; back: string } {
+  return /mac|iphone|ipad/i.test(platform) ? { find: '⌘F', back: '⇧Enter' } : { find: 'Ctrl+F', back: 'Shift+Enter' }
+}

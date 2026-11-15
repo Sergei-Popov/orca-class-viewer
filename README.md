@@ -57,7 +57,7 @@ Odd and broken files get a clear message instead of a blank tab:
 - a file that is not a class shows its first bytes in hex, and a jar saved as `.class` is
   recognised as a ZIP archive;
 - obfuscated names stay readable: invisible, control and right-to-left characters are shown as
-  escapes (`\t`, `​`) wherever a name appears, with a notice. A space inside a name, as in
+  escapes (`\t`, `\u200b`) wherever a name appears, with a notice. A space inside a name, as in
   Kotlin test names, stays a space.
 
 ## A jar
@@ -71,13 +71,19 @@ Odd and broken files get a clear message instead of a blank tab:
 - **Archives inside**: `WEB-INF/lib/*.jar`, `BOOT-INF/lib/*.jar` and an Android library's
   `classes.jar` open in place (`Enter`), with a trail back.
 - **Overview**: counts of classes, packages and resources, a chart of the Java versions the
-  classes are compiled for, the module name (from `META-INF/versions/N` when a multi-release jar
-  keeps its `module-info` only there), `Main-Class` as a link, other key manifest attributes,
-  multi-release versions and the archives inside.
-- **Entries as the JVM takes them**: by their exact stored names, the last copy of a name
-  winning, for classes and the manifest alike. Names the JVM never looks up (with `..`, `.`, `\`
-  or a leading `/`) and the earlier copies of a name are listed apart under **Unusual entries**,
-  with a notice, so a crafted jar cannot show a decoy in place of the class that runs.
+  classes are compiled for, the module name (a `.jmod`'s from `classes/module-info.class`; from
+  `META-INF/versions/N` when a multi-release jar keeps its `module-info` only there),
+  `Main-Class` as a link, other key manifest attributes, multi-release versions and the archives
+  inside.
+- **Entries as the JVM takes them**: the central directory `java.util.zip` reads (when an archive
+  holds another one a different tool could read, a notice says so), entries by their exact
+  stored names, the last copy of a name winning. Names the JVM never looks up (with `..`, `.`,
+  `\` or a leading `/`), the earlier copies of a name, and entries named like folders that hold
+  data are listed apart under **Unusual entries**, with a notice, so a crafted jar cannot show a
+  decoy in place of the class that runs. The JVM reads `a/B.class/` as `a/B.class` when no entry
+  has that name, and so does the viewer. The manifest is the one `java.util.jar` (Java 21) reads:
+  the last `META-INF/MANIFEST.MF` in any capitals, with a hint when `java -jar` would not find it;
+  version folders count only as the JVM names them (`versions/11`, not `versions/011`).
 - Selecting a class opens it with the four tabs above. Selecting a file previews it: text with
   the manifest and `.properties` keys and `.java` sources highlighted, images, or a hex dump;
   **Save…** writes the file through Orca's save dialog.
@@ -102,8 +108,13 @@ Odd and broken files get a clear message instead of a blank tab:
   overview's version chart fills in while you browse. Classes are read when you select them.
 - Archives inside open up to 64 MiB each and 4 levels deep; text previews show the first 2 MiB,
   images up to 16 MiB, and other files the first 4 KiB in hex. Code lines are cut at 4,000
-  characters on screen. Classes read only for the Outline's names are limited to 4 MiB each and
-  64 MiB in all. Folders more than 128 levels deep are shown as one.
+  characters on screen. Classes read only for the Outline's names are limited to 1 MiB each, and
+  one class's views unpack at most 64 MiB of them. Folders more than 128 levels deep are shown as
+  one.
+- The Bytecode tab lists up to 1,000,000 instructions and table rows per class; past that, the
+  remaining methods keep their declaration and flags, their code is left out, and a notice says
+  so. The Constant pool searches the same instructions for uses. A method whose code is longer
+  than 65,535 bytes, which the JVM rejects, is shown as damaged.
 - ZIP entries that are encrypted or use methods other than stored and Deflate (jars never do) are
   listed but not read.
 - Orca opens an empty file in its own text editor, so the viewer's "file is empty" message is not

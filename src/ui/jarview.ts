@@ -7,14 +7,14 @@ import type { ClassFile } from '../classfile/classfile'
 import { peekVersion } from '../classfile/classfile'
 import { binaryName, displayName } from '../classfile/names'
 import { javaRelease } from '../classfile/versions'
-import { ClassCache } from '../jar/cache'
-import { type ClassRef, type JarKind, type JarModel, type JarNode, UNUSUAL_ID, buildJar, findClass, jarKind, walk } from '../jar/jar'
+import { ClassCache, type ReadBudget, readBudget } from '../jar/cache'
+import { type ClassRef, type JarKind, type JarModel, type JarNode, MANIFEST, UNUSUAL_ID, buildJar, findClass, jarKind, walk } from '../jar/jar'
 import { KEY_ATTRIBUTES } from '../jar/manifest'
 import { type ZipEntry, ZipError, openZip } from '../zip/zip'
 import { ClassView } from './classview'
 import { CodeView } from './codeview'
 import { clamp, copyText, h, highlight, storageGet, storageSet, svg } from './dom'
-import { type Env, fill, hexDump, saveFile, sizeText } from './env'
+import { type Env, fill, hexDump, saveFile, shortcuts, sizeText } from './env'
 import { type IconName, icon } from './icons'
 import { TEXT_TYPES, decodeText, textLines } from './textpreview'
 
@@ -95,7 +95,7 @@ export class JarView {
     const collapse = this.iconButton('collapse', t.collapseAll, () => this.setAll(false))
     const bar = h('div', { className: 'cv-bar' }, this.crumbs, this.summary, h('span', { className: 'cv-spacer' }), expand, collapse)
     this.notice = h('div', { className: 'cv-notice', hidden: true })
-    this.filterInput = h('input', { type: 'search', placeholder: t.treeFilter, 'aria-label': t.treeFilter, title: t.treeFilterHint, spellcheck: 'false' })
+    this.filterInput = h('input', { type: 'search', placeholder: t.treeFilter, 'aria-label': t.treeFilter, title: fill(t.treeFilterHint, shortcuts()), spellcheck: 'false' })
     this.rowsEl = h('div', { className: 'cv-trows', role: 'presentation' })
     this.scroll = h('div', { className: 'cv-scroll', tabindex: 0, role: 'tree', 'aria-label': t.treeLabel }, this.rowsEl)
     this.tree = h('div', { className: 'cv-tree' }, h('div', { className: 'cv-tree-bar' }, h('label', { className: 'cv-search' }, svg(icon('search')), this.filterInput)), this.scroll)
@@ -196,9 +196,16 @@ export class JarView {
       .join(' · ')
     const notices: string[] = []
     if (m.zip.damaged) notices.push(t.zipDamaged)
-    if (m.unusual.length || m.shadowed.length) {
-      const list = [m.unusual.length ? t.unusualNames(m.unusual.length) : '', m.shadowed.length ? t.shadowedCopies(m.shadowed.length) : ''].filter(Boolean).join(` ${t.and} `)
+    if (m.zip.ambiguous) notices.push(t.zipAmbiguous)
+    if (m.unusual.length || m.shadowed.length || m.folderData.length) {
+      const parts = [
+        m.unusual.length ? t.unusualNames(m.unusual.length) : '',
+        m.shadowed.length ? t.shadowedCopies(m.shadowed.length) : '',
+        m.folderData.length ? t.folderEntries(m.folderData.length) : ''
+      ].filter(Boolean)
+      const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} ${t.and} ${parts[parts.length - 1]}` : parts[0]
       notices.push(fill(t.unusualNotice, { list }))
+      if (m.folderData.length) notices.push(t.folderDataNotice)
     }
     this.notice.hidden = notices.length === 0
     this.notice.replaceChildren(...(notices.length ? [svg(icon('warning')), h('span', {}, notices.join(' '))] : []))
@@ -328,7 +335,7 @@ export class JarView {
     label.append(highlight(this.nodeLabel(node), level.filter))
     row.append(label)
     if (node.issue && node.id !== UNUSUAL_ID) {
-      const note = node.issue === 'shadowed' ? t.entryShadowed : t.entryUnusual
+      const note = node.issue === 'shadowed' ? t.entryShadowed : node.issue === 'folder' ? t.entryFolderData : t.entryUnusual
       row.append(h('span', { className: 'cv-note t-bad', title: note }, note))
     }
     if (node.versions?.length) {
@@ -596,10 +603,13 @@ export class JarView {
     view.root.style.minHeight = '0'
     this.classView = view
     this.detail.append(view.root)
-    const ref = findClass(level.model, name)
+    // Names resolve from the root of the class shown, not from another class of its name.
+    const ref = level.model.classes.get(name)?.find((r) => r.node === node) ?? findClass(level.model, name)
+    // One class's views unpack at most this much of the archive to resolve names.
+    const reads = readBudget()
     view.show(bytes, {
       extra,
-      resolve: (n) => this.parsed(level, n, ref),
+      resolve: (n) => this.parsed(level, n, ref, reads),
       hasClass: (n) => findClass(level.model, n, ref) !== undefined,
       openClass: (n) => {
         const target = findClass(level.model, n, ref)
@@ -609,8 +619,8 @@ export class JarView {
   }
 
   /** A class read only to resolve names: small ones only, and within the level's byte budget. */
-  private parsed(level: Level, name: string, from?: ClassRef): ClassFile | undefined {
-    return level.cache.get(name, findClass(level.model, name, from)?.entry)
+  private parsed(level: Level, name: string, from: ClassRef | undefined, reads: ReadBudget): ClassFile | undefined {
+    return level.cache.get(name, findClass(level.model, name, from)?.entry, reads)
   }
 
   private head(node: JarNode, entry: ZipEntry | undefined, actions: HTMLElement[]): HTMLElement {
@@ -836,7 +846,8 @@ export class JarView {
       if (node) {
         const b = h('button', { className: 'cv-a cv-mono', type: 'button' }, displayName(m.manifestEntry.name))
         b.addEventListener('click', () => this.select(node.id))
-        info.push([t.manifest, b])
+        // java.util.jar reads a manifest named in other capitals, but `java -jar` wants the exact name.
+        info.push([t.manifest, m.manifestEntry.name === MANIFEST ? b : h('span', {}, b, h('span', { className: 'cv-hint' }, `  ${t.manifestNotExact}`))])
       }
     }
     if (info.length) {

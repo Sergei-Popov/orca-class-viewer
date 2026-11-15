@@ -347,12 +347,22 @@ export function methodModifiers(cls: ClassFile, method: Member): string[] {
 
 /** `public static <T> List<T> copy(List<? extends T> source) throws IOException` */
 export function methodDeclaration(cls: ClassFile, method: Member, namer: Namer): string {
-  if (method.name === '<clinit>') return 'static'
+  return methodDeclarationAt(cls, method, namer).text
+}
+
+/**
+ * The declaration, and where the method's name is in it: `[from, to)` of `text`, which may hold
+ * the namer's link marks before the name. A static initializer's name is `static`.
+ */
+export function methodDeclarationAt(cls: ClassFile, method: Member, namer: Namer): { text: string; name: [number, number] } {
+  if (method.name === '<clinit>') return { text: 'static', name: [0, 6] }
   const parts = methodParts(cls, method, namer)
-  const head = [...methodModifiers(cls, method), parts.typeParams, parts.returns, `${parts.name}(${parts.params.join(', ')})`]
-    .filter(Boolean)
-    .join(' ')
-  return parts.throws.length ? `${head} throws ${parts.throws.join(', ')}` : head
+  const before = [...methodModifiers(cls, method), parts.typeParams, parts.returns].filter(Boolean).join(' ')
+  const head = [before, `${parts.name}(${parts.params.join(', ')})`].filter(Boolean).join(' ')
+  // The name as methodParts writes it; a descriptor that cannot be read follows it in a comment.
+  const shown = method.name === '<init>' ? displayName(sourceSimpleName(cls)) : displayName(method.name)
+  const from = before ? before.length + 1 : 0
+  return { text: parts.throws.length ? `${head} throws ${parts.throws.join(', ')}` : head, name: [from, from + shown.length] }
 }
 
 /** `default "x"` for an annotation member with a default value. */

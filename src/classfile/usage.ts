@@ -3,6 +3,7 @@
 // translates the parts of a use site and links the instructions.
 
 import { disassemble } from '../bytecode/disasm'
+import { MAX_LISTED_ROWS } from '../bytecode/listing'
 import type { AttributeInfo } from './attributes'
 import type { ClassFile } from './classfile'
 
@@ -22,9 +23,18 @@ export type UseSite = { owner: 'class' | 'field' | 'method' | 'component'; name?
 
 export type Usage = { referredBy: number[]; code: CodeUse[]; sites: UseSite[] }
 
-export function poolUsage(cls: ClassFile): Usage[] {
+/** Every entry's uses, by index; `codeCut` when the methods past the instruction limit were not searched. */
+export type PoolUsage = Usage[] & { codeCut?: boolean }
+
+/**
+ * Who uses each entry. The bytecode is searched for its first `limit` instructions or so, as
+ * the Bytecode tab lists them: a crafted class of many full methods would make tens of millions
+ * of uses.
+ */
+export function poolUsage(cls: ClassFile, limit = MAX_LISTED_ROWS): PoolUsage {
   const pool = cls.pool
-  const usage: Usage[] = Array.from({ length: pool.entries.length }, () => ({ referredBy: [], code: [], sites: [] }))
+  const usage: PoolUsage = Array.from({ length: pool.entries.length }, () => ({ referredBy: [], code: [], sites: [] }))
+  let left = limit
   const valid = (index: number) => index > 0 && index < usage.length
   const add = (index: number, at: UseSite, ...steps: UseStep[]) => {
     if (valid(index)) usage[index].sites.push({ ...at, path: [...at.path, ...steps] })
@@ -117,8 +127,14 @@ export function poolUsage(cls: ClassFile): Usage[] {
     attributes(m.attributes, at)
     const code = m.attributes.find((a) => a.value.kind === 'Code')
     if (code?.value.kind === 'Code') {
-      for (const ins of disassemble(code.value.code.code)) {
-        for (const op of ins.operands) if (op.kind === 'cp' && valid(op.index)) usage[op.index].code.push({ method: k, offset: ins.offset })
+      if (left <= 0) {
+        usage.codeCut = true
+      } else {
+        const instructions = disassemble(code.value.code.code)
+        left -= instructions.length
+        for (const ins of instructions) {
+          for (const op of ins.operands) if (op.kind === 'cp' && valid(op.index)) usage[op.index].code.push({ method: k, offset: ins.offset })
+        }
       }
     }
   })

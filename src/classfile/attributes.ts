@@ -102,6 +102,8 @@ export type AttributeInfo = {
 }
 
 const MAX_NESTING = 32
+/** The longest bytecode of one method the JVM accepts (JVMS 4.7.3). */
+export const MAX_CODE_LENGTH = 65535
 
 /** Reads `attributes_count` attributes. */
 export function readAttributes(r: Reader, pool: ConstantPool, depth = 0): AttributeInfo[] {
@@ -145,7 +147,13 @@ function parseValue(name: string, r: Reader, pool: ConstantPool, depth: number):
       if (depth > 0) return { kind: 'Raw' }
       const maxStack = r.u2()
       const maxLocals = r.u2()
+      const at = r.pos
       const codeLength = r.u4()
+      // JVMS 4.7.3: 0 < code_length < 65536. The JVM rejects anything else, and a crafted length of
+      // millions of bytes would make listings of millions of lines.
+      if (codeLength === 0 || codeLength > MAX_CODE_LENGTH) {
+        throw new ClassFormatError('malformed', at, `code_length is ${codeLength}, where the JVM allows 1 to ${MAX_CODE_LENGTH}`)
+      }
       const code = r.take(codeLength, 'the bytecode')
       const n = r.u2()
       const exceptions: ExceptionEntry[] = []

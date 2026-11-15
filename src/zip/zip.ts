@@ -45,6 +45,11 @@ export type Zip = {
   size: number
   /** The central directory ends early; `entries` holds what could be read. */
   damaged: boolean
+  /**
+   * The archive holds another directory a tool could take for its own: a second end record that
+   * checks out, or a ZIP64 record java.util.zip does not use. `entries` is what java.util.zip reads.
+   */
+  ambiguous: boolean
   comment?: string
   /** Unpacks an entry, at most `limit` bytes; checks the CRC when it unpacks all of it. */
   read(entry: ZipEntry, limit?: number): ReadResult
@@ -76,58 +81,108 @@ export function normalizePath(name: string): string {
   return parts.join('/')
 }
 
-/** The end of central directory record, searched from the end past a comment of up to 64 KB. */
-export function findEndOfCentralDirectory(bytes: Uint8Array): number {
+const sigAt = (b: Uint8Array, at: number, sig: number) => at >= 0 && at + 4 <= b.length && u32(b, at) === sig
+
+/** An end record that java.util.zip accepts: its comment ends the file, or the directory and the
+ *  first local header sit where it says (ZipFile.Source.findEND). */
+function acceptedEnd(bytes: Uint8Array, at: number): boolean {
+  if (at + 22 + u16(bytes, at + 20) === bytes.length) return true
+  const cenpos = at - u32(bytes, at + 12)
+  return sigAt(bytes, cenpos, SIG_CENTRAL) && sigAt(bytes, cenpos - u32(bytes, at + 16), SIG_LOCAL)
+}
+
+const isEnd = (b: Uint8Array, i: number) => b[i] === 0x50 && b[i + 1] === 0x4b && b[i + 2] === 5 && b[i + 3] === 6
+
+/**
+ * The end record java.util.zip reads, and whether another one could pass for it: a record nearer
+ * the end of the file that java.util.zip passes over (a tool that takes the last one reads that),
+ * or one further back whose comment reaches the end of the file (a tool that wants an exact
+ * comment reads that). A nested jar's own end record inside an entry is neither.
+ */
+function scanEnds(bytes: Uint8Array): { end: number; other: boolean } {
   const last = bytes.length - 22
-  if (last < 0) return -1
-  const stop = Math.max(0, last - 0xffff)
-  let loose = -1
-  for (let i = last; i >= stop; i--) {
-    if (bytes[i] === 0x50 && bytes[i + 1] === 0x4b && bytes[i + 2] === 5 && bytes[i + 3] === 6) {
-      const commentLength = u16(bytes, i + 20)
-      if (i + 22 + commentLength === bytes.length) return i
-      if (loose < 0 && i + 22 + commentLength <= bytes.length) loose = i
+  let end = -1
+  let other = false
+  for (let i = last, stop = Math.max(0, last - 0xffff); i >= stop; i--) {
+    if (!isEnd(bytes, i)) continue
+    if (end < 0) {
+      if (acceptedEnd(bytes, i)) end = i
+      else other = true
+    } else if (i + 22 + u16(bytes, i + 20) === bytes.length) {
+      other = true
+      break
     }
   }
-  return loose
+  return { end, other }
+}
+
+/**
+ * The end of central directory record java.util.zip reads: the one nearest the end of the file
+ * whose comment reaches the end, or whose directory and first local header check out. Searched
+ * past a comment of up to 64 KB; -1 when there is none.
+ */
+export function findEndOfCentralDirectory(bytes: Uint8Array): number {
+  return scanEnds(bytes).end
+}
+
+/** Where the directory is, as java.util.zip takes it from an end record and its ZIP64 record. */
+type Directory = { total: number; size: number; offset: number; end: number; zip64Ignored: boolean }
+
+function directoryOf(bytes: Uint8Array, end: number): Directory {
+  const d: Directory = { total: u16(bytes, end + 10), size: u32(bytes, end + 12), offset: u32(bytes, end + 16), end, zip64Ignored: false }
+  // A ZIP64 record is used only when each of its values matches the end record's or the end
+  // record holds the "see ZIP64" value there; the locator's offset is not guessed at.
+  const locator = end - 20
+  if (!sigAt(bytes, locator, SIG_LOCATOR64)) return d
+  const end64 = u64(bytes, locator + 8)
+  const found = end64 + 56 <= bytes.length && sigAt(bytes, end64, SIG_END64)
+  // A ZIP64 end record right before the locator, where some tools look when the offset is off.
+  const near = locator - 56
+  if (!found) {
+    d.zip64Ignored = sigAt(bytes, near, SIG_END64) && u64(bytes, near + 48) !== d.offset
+    return d
+  }
+  const total = u64(bytes, end64 + 32)
+  const size = u64(bytes, end64 + 40)
+  const offset = u64(bytes, end64 + 48)
+  const agrees =
+    (size === d.size || d.size === 0xffffffff) && (offset === d.offset || d.offset === 0xffffffff) && (total === d.total || d.total === 0xffff)
+  if (!agrees) {
+    d.zip64Ignored = true
+    return d
+  }
+  return { total, size, offset, end: end64, zip64Ignored: false }
 }
 
 type Raw = ZipEntry & { localOffset: number; flags: number }
 
 export function openZip(bytes: Uint8Array): Zip {
-  const end = findEndOfCentralDirectory(bytes)
+  const scan = scanEnds(bytes)
+  const end = scan.end
   if (end < 0) throw new ZipError('not-zip', 'no ZIP end record')
-  let total = u16(bytes, end + 10)
-  let cdSize = u32(bytes, end + 12)
-  let cdOffset = u32(bytes, end + 16)
+  const dir = directoryOf(bytes, end)
   const commentLength = u16(bytes, end + 20)
-  let cdEnd = end
-
-  const locator = end - 20
-  if (locator >= 0 && u32(bytes, locator) === SIG_LOCATOR64) {
-    let end64 = u64(bytes, locator + 8)
-    if (end64 + 56 > bytes.length || u32(bytes, end64) !== SIG_END64) end64 = locator - 56
-    if (end64 >= 0 && u32(bytes, end64) === SIG_END64) {
-      total = u64(bytes, end64 + 32)
-      cdSize = u64(bytes, end64 + 40)
-      cdOffset = u64(bytes, end64 + 48)
-      cdEnd = end64
-    }
+  // The directory sits right before its end record, whatever offset is stored; the difference
+  // is data before the archive (a launcher script, a jmod's header), which shifts every offset.
+  let cdStart = dir.end - dir.size
+  let shift = cdStart - dir.offset
+  let damaged = false
+  if (cdStart < 0 || shift < 0 || (dir.size > 0 && !sigAt(bytes, cdStart, SIG_CENTRAL))) {
+    // java.util.zip refuses such an archive; show what the stored offset leads to.
+    damaged = true
+    cdStart = dir.offset
+    shift = 0
   }
-
-  // Data before the archive shifts every stored offset.
-  let shift = 0
-  const actualStart = cdEnd - cdSize
-  if (actualStart >= 0 && actualStart !== cdOffset && u32(bytes, actualStart) === SIG_CENTRAL) {
-    shift = actualStart - cdOffset
-  }
+  const cdEnd = damaged ? bytes.length : dir.end
+  // Another end record or a ZIP64 record java.util.zip passes over: other tools may list other entries.
+  const ambiguous = scan.other || dir.zip64Ignored
 
   const raws: Raw[] = []
-  let at = cdOffset + shift
-  let damaged = false
+  let at = cdStart
+  const total = dir.total
   for (;;) {
-    if (at + 46 > bytes.length || u32(bytes, at) !== SIG_CENTRAL) {
-      damaged = raws.length < total && total !== 0xffff
+    if (at + 46 > cdEnd || u32(bytes, at) !== SIG_CENTRAL) {
+      damaged ||= (raws.length < total && total !== 0xffff) || (!damaged && at !== cdEnd)
       break
     }
     const flags = u16(bytes, at + 8)
@@ -143,7 +198,7 @@ export function openZip(bytes: Uint8Array): Zip {
     const external = u32(bytes, at + 38)
     let localOffset = u32(bytes, at + 42)
     const nameEnd = at + 46 + nameLength
-    if (nameEnd > bytes.length) {
+    if (nameEnd > cdEnd) {
       damaged = true
       break
     }
@@ -168,7 +223,9 @@ export function openZip(bytes: Uint8Array): Zip {
       index: raws.length,
       name,
       path: normalizePath(name),
-      dir: /[/\\]$/.test(name) || ((external & 0x10) !== 0 && size === 0),
+      // A folder holds nothing: an entry named like one that has data is a file to the JVM,
+      // which finds it under the name without the slash.
+      dir: size === 0 && (/[/\\]$/.test(name) || (external & 0x10) !== 0),
       size,
       packed,
       method,
@@ -188,6 +245,7 @@ export function openZip(bytes: Uint8Array): Zip {
     entries,
     size: bytes.length,
     damaged,
+    ambiguous,
     comment,
     read(entry, limit = Infinity) {
       const raw = raws[entry.index]

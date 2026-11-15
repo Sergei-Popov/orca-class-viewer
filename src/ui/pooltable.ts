@@ -5,7 +5,8 @@
 import type { ClassFile } from '../classfile/classfile'
 import { displayName } from '../classfile/names'
 import { TAG_NAMES } from '../classfile/pool'
-import { type Usage, type UseSite, poolUsage } from '../classfile/usage'
+import { MAX_LISTED_ROWS } from '../bytecode/listing'
+import { type PoolUsage, type UseSite, poolUsage } from '../classfile/usage'
 import { clamp, h, svg } from './dom'
 import { icon } from './icons'
 import { type Env, fill } from './env'
@@ -24,7 +25,8 @@ export function useSiteText(t: Env['t'], site: UseSite): string {
   const owner =
     site.owner === 'class' ? t.useClass : fill(site.owner === 'field' ? t.useField : site.owner === 'method' ? t.useMethod : t.useComponent, { name })
   const parts = { name: t.useName, descriptor: t.useDescriptor, attributeName: t.useAttributeName, exceptionTable: t.useExceptionTable, argument: t.useArgument }
-  return [owner, ...site.path.map((step) => (typeof step === 'string' ? step : parts[step.part]))].join(' · ')
+  // Steps name attributes as the file does: an unknown attribute's name may hold anything.
+  return [owner, ...site.path.map((step) => (typeof step === 'string' ? displayName(step) : parts[step.part]))].join(' · ')
 }
 
 type Row = { index: number; tag: string; refs: number[]; value: string; uses: number; state: 'entry' | 'slot' | 'missing' }
@@ -39,7 +41,7 @@ export class PoolTable {
   private readonly countEl: HTMLElement
   private readonly all: Row[]
   private rows: Row[]
-  private readonly usage: Usage[]
+  private readonly usage: PoolUsage
   private selected = -1
   private flash = -1
   private frame = 0
@@ -293,21 +295,22 @@ export class PoolTable {
     }
     const u = this.usage[i]
     this.detail.append(h('h3', {}, `#${i} · ${TAG_NAMES[e.tag]}`), h('div', { className: 'cv-dvalue' }, displayValue(pool.text(i), e.tag)))
-    const list = (title: string, items: HTMLElement[]) => {
+    // Elements only for the items shown: a constant may be used a million times.
+    const list = <T>(title: string, items: readonly T[], make: (item: T) => HTMLElement) => {
       if (!items.length) return
       const ul = h('ul', {})
-      for (const item of items.slice(0, LIST_LIMIT)) ul.append(h('li', {}, item))
+      for (let k = 0; k < Math.min(items.length, LIST_LIMIT); k++) ul.append(h('li', {}, make(items[k])))
       if (items.length > LIST_LIMIT) ul.append(h('li', { className: 'cv-hint' }, fill(t.poolMore, { n: items.length - LIST_LIMIT })))
       this.detail.append(h('h3', {}, title), ul)
     }
     const chip = (x: number) => h('button', { className: 'cv-chip t-cp', 'data-ref': x, title: pool.text(x).slice(0, 300) }, `#${x} ${TAG_NAMES[pool.get(x)?.tag ?? 0] ?? '?'}`)
-    list(t.poolRefs, pool.refs(i).map(chip))
-    list(t.poolReferredBy, u.referredBy.map(chip))
-    list(
-      t.poolUsedInCode,
-      u.code.map((c) => h('button', { className: 'cv-chip', 'data-method': c.method, 'data-offset': c.offset, title: fill(t.goToOffset, { n: c.offset }) }, `${displayName(this.cls.methods[c.method]?.name ?? '?')} @${c.offset}`))
+    list(t.poolRefs, pool.refs(i), chip)
+    list(t.poolReferredBy, u.referredBy, chip)
+    list(t.poolUsedInCode, u.code, (c) =>
+      h('button', { className: 'cv-chip', 'data-method': c.method, 'data-offset': c.offset, title: fill(t.goToOffset, { n: c.offset }) }, `${displayName(this.cls.methods[c.method]?.name ?? '?')} @${c.offset}`)
     )
-    list(t.poolUsedByClass, [...new Set(u.sites.map((s) => useSiteText(t, s)))].map((w) => h('span', { className: 'cv-hint' }, w)))
+    if (this.usage.codeCut) this.detail.append(h('p', { className: 'cv-hint' }, fill(t.poolCodeCut, { n: MAX_LISTED_ROWS.toLocaleString(this.env.locale) })))
+    list(t.poolUsedByClass, [...new Set(u.sites.map((s) => useSiteText(t, s)))], (w) => h('span', { className: 'cv-hint' }, w))
     if (!u.referredBy.length && !u.code.length && !u.sites.length) this.detail.append(h('p', { className: 'cv-hint' }, t.poolNotUsed))
   }
 }
