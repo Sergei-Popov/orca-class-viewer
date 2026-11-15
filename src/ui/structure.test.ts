@@ -6,6 +6,7 @@ import { asm, helloClass } from '../testing/classwriter'
 import { type FakeElement, withFakeDom } from '../testing/dom'
 import type { Env } from './env'
 import { buildStructure } from './structure'
+import { css } from './styles'
 
 function secretive() {
   const w = helloClass('demo/Secretive')
@@ -69,4 +70,23 @@ test('marks a damaged Code attribute in the method table, in the UI language', (
       assert.equal(doc.findAll((el) => el.className === 't-bad' && el.textContent === 'Code' && el.getAttribute('title') === reason).length, 1)
     }
   })
+})
+
+// Listing images: in a narrow Structure tab the fields table split ConstantValue into "ConstantVal"
+// and "ue", because every mono cell could break anywhere. Flags, code sizes and attribute names now
+// wrap between words only; descriptors, which have no spaces, still break anywhere.
+test('keeps flags, code sizes and attribute names whole in a narrow member table', () => {
+  withFakeDom(() => {
+    const { doc } = structure('en')
+    const cell = (text: string) => doc.findAll((el) => el.tagName === 'TD' && el.textContent === text)[0]
+    const words = (el: FakeElement | undefined) => (el?.className ?? '').split(' ').includes('cv-words')
+    assert.ok(words(cell('0x0002 private')), 'field flags')
+    assert.ok(words(cell('com.acme.FieldThing')), 'field attributes')
+    assert.ok(words(cell('Code, com.acme.Secret')), 'method attributes')
+    const code = doc.findAll((el) => el.tagName === 'TD' && el.textContent.includes('stack'))
+    assert.ok(code.length > 0 && code.every(words), 'code sizes')
+    const descriptor = cell('()V')
+    assert.ok(descriptor && !words(descriptor), 'descriptors still break anywhere')
+  })
+  assert.ok(css.includes('.cv-grid td.cv-words { overflow-wrap: break-word; }'))
 })

@@ -15,24 +15,28 @@
   "icon": "images/icon.png",
   "cover": {
     "path": "images/cover.png",
-    "alt": "Read any class in a jar as Java declarations: Telescope’s Outline, compiled for Java 21, beside a tree of 12 classes in 3 packages."
+    "alt": "Class File Viewer on a jar: the package tree with Telescope selected, and its declarations in Java syntax with a Java 21 badge."
   },
   "screenshots": [
     {
-      "path": "images/bytecode-light.png",
-      "alt": "See what the compiler wrote, listed like javap -c -v: Catalog’s constructor, stack=3, locals=1, with links to pool entries #1, #7, #9."
+      "path": "images/shot-1-bytecode.png",
+      "alt": "The Bytecode tab on Telescope.point(): stack=4, locals=4, args_size=2, and each constant explained in a comment."
     },
     {
-      "path": "images/constant-pool-dark.png",
-      "alt": "Find what uses each constant: #10 Fieldref Catalog.bodies, used 5 times, by <init>, add, map, nearest and iterator; 157 entries."
+      "path": "images/shot-2-overview.png",
+      "alt": "A jar's overview: 84 classes, 9 packages, 1 resource; 83 compiled for Java 21, 1 for Java 8; its module and main class."
     },
     {
-      "path": "images/multi-release-light.png",
-      "alt": "See each class’s Java version and its multi-release copies: Units, compiled for Java 8, with a switch to its Java 11+ version."
+      "path": "images/shot-3-constant-pool.png",
+      "alt": "The Constant pool tab, 4 Methodrefs: #67 Optics.limitingMagnitude refers to #68 and #69 and is used in observe at offset 12."
     },
     {
-      "path": "images/jar-overview-light.png",
-      "alt": "A jar at a glance: Java 21 for 6 classes, 17 for 5, 8 for 1, module demo.observatory and main class demo.observatory.Main."
+      "path": "images/shot-4-structure.png",
+      "alt": "The Structure tab: Telescope's class header (6,880 bytes, CA FE BA BE, version 65.0) and the table of its 8 fields."
+    },
+    {
+      "path": "images/shot-5-multi-release.png",
+      "alt": "Units in a multi-release jar, switched from Base to Java 17+: its Java 17 copy, outlined. Shown in Orca's light theme."
     }
   ],
   "engines": {
@@ -45,7 +49,10 @@
         "id": "class",
         "title": "Class File Viewer",
         "icon": "icons/class.png",
-        "extensions": [".class", ".jmod"],
+        "extensions": [
+          ".class",
+          ".jmod"
+        ],
         "entry": "src/editor.ts",
         "priority": "default",
         "contentKind": "bytes",
@@ -55,7 +62,12 @@
         "id": "jar",
         "title": "Class File Viewer",
         "icon": "icons/jar.png",
-        "extensions": [".jar", ".war", ".ear", ".aar"],
+        "extensions": [
+          ".jar",
+          ".war",
+          ".ear",
+          ".aar"
+        ],
         "entry": "src/editor.ts",
         "priority": "option",
         "contentKind": "bytes",

@@ -1,0 +1,6 @@
+Manifest-Version: 1.0
+Implementation-Title: Observatory
+Implementation-Version: 2.0.0
+Implementation-Vendor: Ridge Field Station
+Multi-Release: true
+
