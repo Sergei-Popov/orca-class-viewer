@@ -51,10 +51,15 @@ export type Zip = {
    */
   ambiguous: boolean
   /**
-   * The end record and its comment end the file. java.util.zip also takes one with bytes after
+   * No bytes follow the end record and its comment. java.util.zip also takes one with bytes after
    * it, but the java launcher does not, and `java -jar` will not start such a jar.
    */
   endExact: boolean
+  /**
+   * The end record's comment runs past the end of the file. java.util.zip cannot read it and will
+   * not open the archive (Java 21: EOFException), so `damaged` is set too.
+   */
+  commentCut: boolean
   comment?: string
   /** Unpacks an entry, at most `limit` bytes; checks the CRC when it unpacks all of it. */
   read(entry: ZipEntry, limit?: number): ReadResult
@@ -246,12 +251,14 @@ export function openZip(bytes: Uint8Array): Zip {
   const comment = commentLength ? decodeName(bytes.subarray(end + 22, Math.min(bytes.length, end + 22 + commentLength))) : undefined
   const entries: ZipEntry[] = raws.map(({ localOffset: _l, flags: _f, ...entry }) => entry)
 
+  const commentEnd = end + 22 + commentLength
   return {
     entries,
     size: bytes.length,
-    damaged,
+    damaged: damaged || commentEnd > bytes.length,
     ambiguous,
-    endExact: end + 22 + commentLength === bytes.length,
+    endExact: commentEnd >= bytes.length,
+    commentCut: commentEnd > bytes.length,
     comment,
     read(entry, limit = Infinity) {
       const raw = raws[entry.index]

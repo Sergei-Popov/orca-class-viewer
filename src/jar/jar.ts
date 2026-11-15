@@ -39,6 +39,9 @@ export type JarNode = {
   className?: string
   /** Classes: copies under META-INF/versions/N, oldest first. */
   versions?: ClassVersion[]
+  /** A class a multi-release jar has only under META-INF/versions/N: the release of `entry`, its
+   *  oldest copy, which `versions` follows with the newer ones. */
+  release?: number
   /** Roots and packages: the number of classes in them, nested classes included. */
   classCount: number
   children: JarNode[]
@@ -318,6 +321,8 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
   const resourceNodes = (d: Dir): JarNode[] =>
     d.files.filter((f) => !f.path.endsWith('.class')).map((f) => fileNode(f, f.path.slice(f.path.lastIndexOf('/') + 1)))
 
+  /** Class files in plain folders, such as META-INF/versions/N, by entry. */
+  const folderClasses = new Map<ZipEntry, JarNode>()
   /** A plain folder: its files as files, classes included (they still open as classes). */
   const folderNode = (d: Dir, label: string): JarNode => {
     const children: JarNode[] = []
@@ -330,7 +335,9 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
       if (leaf.endsWith('.class')) {
         const v = versionOf(f.path)
         const name = (v ? v.rest : f.path).slice(0, -'.class'.length)
-        children.push({ id: `c:${f.path}`, kind: 'class', label: leaf.slice(0, -'.class'.length), path: f.path, entry: f, className: name, classCount: 1, children: [] })
+        const node: JarNode = { id: `c:${f.path}`, kind: 'class', label: leaf.slice(0, -'.class'.length), path: f.path, entry: f, className: name, classCount: 1, children: [] }
+        folderClasses.set(f, node)
+        children.push(node)
       } else {
         children.push(fileNode(f, leaf))
       }
@@ -405,20 +412,25 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
     manifestEntry = e
     if (e.name === MANIFEST) manifestExact = true
   }
+  let manifestText = ''
   if (manifestEntry && manifestEntry.size < 4 * 1024 * 1024) {
     try {
-      manifest = parseManifest(new TextDecoder().decode(zip.read(manifestEntry).bytes))
+      manifestText = new TextDecoder().decode(zip.read(manifestEntry).bytes)
+      manifest = parseManifest(manifestText)
     } catch (error) {
       if (!(error instanceof ZipError)) throw error
     }
   }
-  const multiRelease = manifest?.main.get('Multi-Release')?.trim().toLowerCase() === 'true'
+  // JarFile.checkForSpecialAttributes (Java 21): the bytes hold a line "Multi-Release: true" in any
+  // case, and the main section's value, past exactly one space, is "true" in any case, untrimmed.
+  const multiRelease = /\nmulti-release: true/i.test(manifestText) && manifest?.main.get('Multi-Release')?.toLowerCase() === 'true'
 
   // java.util.jar registers a release for each entry under META-INF/versions/N/ not named like a
-  // folder, and looks a class up in the registered releases only.
+  // folder, META-INF/ and versions/ in any ASCII capitals (ZipFile.Source.getMetaVersion), and
+  // looks a class up by its exact name in the registered releases only.
   const versionSet = new Set<number>()
   for (const entry of zip.entries) {
-    const v = entry.name.endsWith('/') ? undefined : versionOf(entry.name)
+    const v = entry.name.endsWith('/') ? undefined : versionOf(entry.name.replace(/^meta-inf\/versions\//i, 'META-INF/versions/'))
     if (v) versionSet.add(v.release)
   }
   let moduleInfo: ModuleInfo | undefined
@@ -427,6 +439,7 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
   if (topModule) moduleInfo = { entry: topModule.entry, nodeId: topModule.node.id }
   // In a multi-release jar, META-INF/versions/N/… classes are listed on the class they replace;
   // without Multi-Release: true the JVM does not use them, and they stay files under META-INF.
+  const versionOnly = new Map<string, ClassVersion[]>()
   for (const entry of multiRelease ? zip.entries : []) {
     const path = readAs(entry)
     const v = path === undefined ? undefined : versionOf(path)
@@ -436,10 +449,27 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
     const base = classes.get(name)?.find((r) => r.root === '')
     if (base) (base.node.versions ??= []).push({ release, entry })
     // Libraries that still run on Java 8 keep their module descriptor under versions/9.
-    else if (name === 'module-info' && !topModule && release >= (moduleInfo?.release ?? 0)) {
-      // One named like a folder is listed apart.
-      moduleInfo = { entry, nodeId: entry.name.endsWith('/') ? `x:${entry.index}` : `c:${entry.path}`, release }
+    else if (name === 'module-info') {
+      if (!topModule && release >= (moduleInfo?.release ?? 0)) {
+        // One named like a folder is listed apart.
+        moduleInfo = { entry, nodeId: entry.name.endsWith('/') ? `x:${entry.index}` : `c:${entry.path}`, release }
+      }
+    } else {
+      const list = versionOnly.get(name)
+      if (list) list.push({ release, entry })
+      else versionOnly.set(name, [{ release, entry }])
     }
+  }
+  // JarFile finds a class that has copies under versions/N only, as bcprov, the JUnit console and
+  // log4j-api hold: it is indexed by its oldest copy, with the newer ones as its versions.
+  for (const [name, copies] of versionOnly) {
+    copies.sort((a, b) => a.release - b.release)
+    const [oldest, ...newer] = copies
+    const node = folderClasses.get(oldest.entry) ?? apartNodes.get(oldest.entry)
+    if (!node) continue
+    node.release = oldest.release
+    if (newer.length) node.versions = newer
+    addClass(name, oldest.entry, '', node)
   }
   for (const list of classes.values()) for (const r of list) r.node.versions?.sort((a, b) => a.release - b.release)
 

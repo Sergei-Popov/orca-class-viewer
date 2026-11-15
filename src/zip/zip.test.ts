@@ -385,4 +385,20 @@ test('notes whether the end record ends the file, as the java launcher wants', (
     ['a.txt']
   )
   assert.equal(z.damaged, false)
+  assert.equal(z.commentCut, false)
+})
+
+// Review 2, round 3: an end record whose 50-byte comment has 10 bytes left opened as a jar with
+// "bytes follow the end record", where JDK 21 cannot open it at all (EOFException).
+test('an end record whose comment runs past the end of the file is damaged, with nothing after it', () => {
+  const bytes = zip([{ name: 'a.txt', data: 'a' }], { comment: '0123456789' })
+  bytes[bytes.length - 10 - 22 + 20] = 50
+  const z = openZip(bytes)
+  assert.deepEqual([z.commentCut, z.damaged, z.endExact], [true, true, true])
+  assert.deepEqual(
+    z.entries.map((e) => e.name),
+    ['a.txt']
+  )
+  const whole = openZip(zip([{ name: 'a.txt', data: 'a' }], { comment: '0123456789' }))
+  assert.deepEqual([whole.commentCut, whole.damaged, whole.endExact], [false, false, true])
 })

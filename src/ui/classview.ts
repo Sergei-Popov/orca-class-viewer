@@ -333,6 +333,13 @@ export class ClassView {
         const text = indent + fill(line.omitted.of === 'entries' ? t.listingMoreEntries : t.listingMoreAttributes, { n })
         return { text, spans: [{ text: indent }, { text: text.slice(indent.length), cls: SEG_CLASS.comment }] }
       }
+      // A method's first line past the declarations' rows: its name and descriptor, and why.
+      if (line.short) {
+        cut++
+        const note = `  // ${t.listingShortLine}`
+        const text = line.segs.map((s) => s.text).join('')
+        return { text: text + note, spans: [{ text }, { text: note, cls: SEG_CLASS.comment }], anchor: line.anchor }
+      }
       const spans: Span[] = []
       for (const seg of line.segs) {
         if (seg.kind === 'java') {

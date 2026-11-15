@@ -60,8 +60,9 @@ const en = {
   damagedAttributesMore: '{n} more.',
   listingCutTitle: 'The listing is cut',
   listingCutText:
-    'The Bytecode tab lists at most {n} rows of code, tables and attributes, a long line taking several. Past them, code and attributes are left out and marked “not listed”; every method still has its line.',
+    'The Bytecode tab lists at most {n} rows of code, tables and attributes, a long line taking several, and a tenth as many rows of declarations. Past them, code and attributes are left out and marked “not listed”, and a declaration shrinks to the method’s name and descriptor; every method still has its line.',
   listingCutLine: 'not listed ({size}): the listing is full',
+  listingShortLine: 'declaration not listed: the listing is full',
   listingMoreEntries: '… {n} more not listed: the listing is full',
   listingMoreAttributes: 'Attributes not listed ({n}): the listing is full',
   outlineCutTitle: 'The outline is cut',
@@ -223,6 +224,7 @@ const en = {
   nestedErrorTitle: 'Cannot open this archive',
   nestedNotZip: 'It has an archive’s name but no ZIP directory at its end, so it cannot be opened as an archive.',
   zipDamaged: 'The archive’s directory ends early; it shows the entries that could be read.',
+  zipCommentCut: 'The archive’s end record gives it a comment longer than the rest of the file, so Java will not open it; the entries are listed as its directory gives them.',
   zipAmbiguous:
     'The archive holds more than one directory of entries, so other tools may list other files. The tree shows the directory java.util.zip reads.',
   unusualFolder: 'Unusual entries',
@@ -293,8 +295,9 @@ const ru: Strings = {
   damagedAttributesMore: 'И ещё {n}.',
   listingCutTitle: 'Листинг сокращён',
   listingCutText:
-    'Вкладка «Байт-код» показывает не больше {n} строк кода, таблиц и атрибутов; длинная строка считается за несколько. Дальше код и атрибуты не показаны и помечены «не показан»; строка каждого метода остаётся.',
+    'Вкладка «Байт-код» показывает не больше {n} строк кода, таблиц и атрибутов (длинная строка считается за несколько) и вдесятеро меньше строк объявлений. Дальше код и атрибуты не показаны и помечены «не показан», а от объявления остаются имя и дескриптор метода; строка каждого метода остаётся.',
   listingCutLine: 'не показан ({size}): листинг заполнен',
+  listingShortLine: 'объявление не показано: листинг заполнен',
   listingMoreEntries: '… и ещё {n}: листинг заполнен',
   listingMoreAttributes: 'Атрибуты не показаны ({n}): листинг заполнен',
   outlineCutTitle: 'Объявления сокращены',
@@ -454,6 +457,7 @@ const ru: Strings = {
   nestedErrorTitle: 'Не удаётся открыть архив',
   nestedNotZip: 'У него имя архива, но в конце нет каталога ZIP, поэтому открыть его как архив нельзя.',
   zipDamaged: 'Каталог архива обрывается; показаны записи, которые удалось прочитать.',
+  zipCommentCut: 'Запись конца архива объявляет комментарий длиннее остатка файла, и Java такой архив не откроет; записи показаны так, как их даёт каталог.',
   zipAmbiguous: 'В архиве больше одного каталога записей, поэтому другие программы могут показать другие файлы. Дерево показывает каталог, который читает java.util.zip.',
   unusualFolder: 'Необычные записи',
   unusualNotice: 'В папке «Необычные записи» под своими именами: {list}. JVM находит запись только по точному имени и берёт последнюю копию имени; дерево показывает то, что берёт JVM.',

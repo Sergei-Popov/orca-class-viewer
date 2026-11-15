@@ -195,7 +195,7 @@ export class JarView {
       .filter(Boolean)
       .join(' · ')
     const notices: string[] = []
-    if (m.zip.damaged) notices.push(t.zipDamaged)
+    if (m.zip.damaged) notices.push(m.zip.commentCut ? t.zipCommentCut : t.zipDamaged)
     if (m.zip.ambiguous) notices.push(t.zipAmbiguous)
     if (m.unusual.length || m.shadowed.length || m.folderData.length || m.unread.length) {
       const parts = [
@@ -587,7 +587,9 @@ export class JarView {
     const extra = h('div', { className: 'cv-subbar' }, h('span', { className: 'cv-path', title: stored }, stored))
     if (node.versions?.length) {
       const seg = h('div', { className: 'cv-seg', role: 'group', 'aria-label': t.versionsLabel })
-      const choices = [{ label: t.baseVersion, release: undefined as number | undefined }, ...node.versions.map((v) => ({ label: fill(t.releaseVersion, { n: v.release }), release: v.release as number | undefined }))]
+      // A class found under versions/N only starts from its oldest copy, not from a base class.
+      const first = node.release === undefined ? t.baseVersion : fill(t.releaseVersion, { n: node.release })
+      const choices = [{ label: first, release: undefined as number | undefined }, ...node.versions.map((v) => ({ label: fill(t.releaseVersion, { n: v.release }), release: v.release as number | undefined }))]
       for (const c of choices) {
         const b = h('button', { type: 'button', 'aria-pressed': String(c.release === release) }, c.label)
         b.addEventListener('click', () => {
