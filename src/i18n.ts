@@ -46,7 +46,8 @@ const en = {
   languageGroovy: 'Groovy',
   languageClojure: 'Clojure',
   languageTitle: 'Compiled by {language}; the outline shows it the way Java sees it',
-  kotlinTitle: 'Compiled by Kotlin {version}; the outline shows it the way Java sees it',
+  kotlinTitle: 'Compiled by Kotlin (metadata version {version}); the outline shows it the way Java sees it',
+  kotlinMetadata: 'Kotlin metadata',
   damagedBadge: 'damaged',
 
   newerTitle: 'Newer than this viewer',
@@ -54,8 +55,13 @@ const en = {
     'Class file version {major} is newer than the newest this viewer knows ({known}, {release}). It is shown as far as the known format goes.',
   damagedTitle: 'The file is damaged',
   damagedText: 'Reading stopped at byte {offset}: {reason}. Everything before that point is shown.',
+  damagedAttributesTitle: 'Some attributes are damaged',
+  damagedAttribute: '{attribute} of the {owner}: {reason}.',
+  damagedAttributesMore: '{n} more.',
   trailingText: '{n} after the end of the class are not part of it.',
-  hiddenText: 'Some names contain invisible or control characters, which obfuscators use. They are shown as \\uXXXX escapes.',
+  hiddenText: 'Some names contain invisible or control characters, which obfuscators use. They are shown as escapes such as \\t or \\u200b.',
+  tabErrorTitle: 'This view cannot be shown',
+  tabErrorText: 'Something in this class is beyond what the view can lay out. The other tabs still work.',
   unknownMajor: 'Major version {major} belongs to no Java release; the file may not be a class file.',
   // English shows the parser's own messages; other languages show these by error code.
   ownReasons: 'yes',
@@ -136,6 +142,7 @@ const en = {
   codeSummary: '{size}, stack {stack}, locals {locals}',
   rawBytes: 'Raw bytes',
   attributeError: 'Could not read this attribute: {reason}.',
+  showAttributes: 'Show these attributes with their offsets and bytes',
 
   jar: 'Java archive',
   war: 'Web application archive',
@@ -229,8 +236,8 @@ const ru: Strings = {
   tabsLabel: 'Представления класса',
 
   java: 'Java {n}',
-  javaPreview: 'Java {n} preview',
-  javaUnknown: 'major {n}',
+  javaPreview: 'Java {n} (превью)',
+  javaUnknown: 'старшая версия {n}',
   versionTitle: 'Скомпилирован для {release}: версия class-файла {major}.{minor}',
   previewTitle: 'Использует предварительные возможности: запускается только на этой версии Java с --enable-preview',
   languageKotlin: 'Kotlin',
@@ -238,7 +245,8 @@ const ru: Strings = {
   languageGroovy: 'Groovy',
   languageClojure: 'Clojure',
   languageTitle: 'Скомпилирован {language}; объявления показаны так, как их видит Java',
-  kotlinTitle: 'Скомпилирован Kotlin {version}; объявления показаны так, как их видит Java',
+  kotlinTitle: 'Скомпилирован Kotlin (версия метаданных {version}); объявления показаны так, как их видит Java',
+  kotlinMetadata: 'Метаданные Kotlin',
   damagedBadge: 'повреждён',
 
   newerTitle: 'Новее, чем знает просмотрщик',
@@ -246,8 +254,13 @@ const ru: Strings = {
     'Версия class-файла {major} новее самой новой, которую знает просмотрщик ({known}, {release}). Файл показан настолько, насколько формат известен.',
   damagedTitle: 'Файл повреждён',
   damagedText: 'Чтение остановилось на байте {offset}: {reason}. Показано всё, что было до этого места.',
+  damagedAttributesTitle: 'Некоторые атрибуты повреждены',
+  damagedAttribute: '{attribute} — {owner}: {reason}.',
+  damagedAttributesMore: 'И ещё {n}.',
   trailingText: '{n} после конца класса к нему не относятся.',
-  hiddenText: 'В некоторых именах есть невидимые или управляющие символы — так делают обфускаторы. Они показаны как экранирование \\uXXXX.',
+  hiddenText: 'В некоторых именах есть невидимые или управляющие символы — так делают обфускаторы. Они показаны экранированными, например \\t или \\u200b.',
+  tabErrorTitle: 'Это представление не показать',
+  tabErrorText: 'В этом классе есть то, что представление не может разложить. Остальные вкладки работают.',
   unknownMajor: 'Старшая версия {major} не соответствует ни одному выпуску Java; возможно, это не class-файл.',
   ownReasons: 'no',
   reasonTruncated: 'файл обрывается',
@@ -327,6 +340,7 @@ const ru: Strings = {
   codeSummary: '{size}, стек {stack}, локальных {locals}',
   rawBytes: 'Байты',
   attributeError: 'Не удалось прочитать атрибут: {reason}.',
+  showAttributes: 'Показать эти атрибуты со смещениями и байтами',
 
   jar: 'Java-архив',
   war: 'Архив веб-приложения',
@@ -349,7 +363,7 @@ const ru: Strings = {
   startClass: 'Стартовый класс',
   moduleName: 'Модуль',
   automaticModule: 'Имя автоматического модуля',
-  multiRelease: 'Multi-release',
+  multiRelease: 'Многоверсионный',
   multiReleaseValue: 'да: версии для {list}',
   javaVersions: 'Скомпилирован для',
   javaVersionsCounting: 'Чтение версий классов… {done} из {total}',
@@ -413,7 +427,8 @@ const ru: Strings = {
       groovy: 'Скомпилирован Groovy; показан так, как его видит JVM.',
       clojure: 'Скомпилирован Clojure; показан так, как его видит JVM.'
     },
-    damaged: 'Дальше файл повреждён: {reason}.'
+    damaged: 'Дальше файл повреждён: {reason}.',
+    damagedCode: 'скомпилированный код, повреждён: {reason}'
   }
 }
 

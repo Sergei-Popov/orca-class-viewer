@@ -2,7 +2,7 @@
 
 import type { SaveAsOptions } from 'orca/frame'
 import { type Strings, fill } from '../i18n'
-import { ClassFormatError } from '../classfile/bytes'
+import { ClassFormatError, type FormatErrorCode } from '../classfile/bytes'
 import { h } from './dom'
 
 export type Env = {
@@ -25,11 +25,16 @@ export class Toast {
 
 /** A parser error as the UI language says it; English shows the parser's own message. */
 export function reasonText(env: Env, error: unknown): string {
-  const t = env.t
   const message = error instanceof Error ? error.message : String(error)
+  return reasonFor(env, error instanceof ClassFormatError ? error.code : undefined, message)
+}
+
+/** The same from an error's code and message, as damaged attributes keep them. */
+export function reasonFor(env: Env, code: FormatErrorCode | undefined, message: string): string {
+  const t = env.t
   if (t.ownReasons === 'yes') return message
-  if (error instanceof ClassFormatError) return error.code === 'truncated' ? t.reasonTruncated : t.reasonMalformed
-  return t.reasonDamaged
+  if (code === undefined) return t.reasonDamaged
+  return code === 'truncated' ? t.reasonTruncated : t.reasonMalformed
 }
 
 export function sizeText(env: Env, bytes: number): string {
