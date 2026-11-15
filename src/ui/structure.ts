@@ -2,6 +2,7 @@
 // attribute with its offset and length, the known ones decoded, the rest as hex.
 
 import type { AttributeInfo } from '../classfile/attributes'
+import { MAX_LINE_CHARS, MAX_STRUCTURE_ROWS, RowBudget, joinWithin } from '../classfile/budget'
 import type { ClassFile, Member } from '../classfile/classfile'
 import { annotationText, makeNamer } from '../classfile/declarations'
 import { flagNames, flagSummary } from '../classfile/flags'
@@ -17,15 +18,35 @@ export type StructureActions = {
   /** Opens a class of the same archive; undefined when there is none at hand. */
   openClass?: (name: string) => void
   hasClass?: (name: string) => boolean
+  /** Called once the tab leaves rows out. */
+  cut?: () => void
 }
 
 const hex4 = (n: number) => `0x${n.toString(16).padStart(4, '0')}`
 
-export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, actions: StructureActions): HTMLElement {
+/** A member's attribute names stop after about this many characters. */
+const NAMES_CHARS = 200
+
+/**
+ * The Structure tab. What it builds at once takes rows from one budget of `limit`; the attributes
+ * of a member, built on a click, from a budget of their own. A list that does not fit ends with a
+ * count of what is left out.
+ */
+export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, actions: StructureActions, limit = MAX_STRUCTURE_ROWS): HTMLElement {
   const t = env.t
   const pool = cls.pool
   const namer = makeNamer(cls, true)
   const doc = h('div', { className: 'cv-doc' })
+  const budget = new RowBudget(limit)
+  let reported = false
+  /** "… 12 more not shown: the tab is full" */
+  const more = (n: number, tag: 'p' | 'span' = 'p') => {
+    if (!reported) {
+      reported = true
+      actions.cut?.()
+    }
+    return h(tag, { className: 'cv-hint cv-more' }, fill(t.structureMore, { n: n.toLocaleString(env.locale) }))
+  }
 
   const cp = (index: number) => h('button', { className: 'cv-a t-cp cv-mono', 'data-cp': index, title: fill(t.showPool, { n: index }) }, `#${index}`)
   const className = (internal: string) => {
@@ -60,10 +81,15 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
   const release = javaRelease(cls.major, cls.minor)
   const versionText = `${cls.major}.${cls.minor} · ${release.unknown ? '?' : fill(release.preview ? t.javaPreview : t.java, { n: release.release })}`
   const interfaces = h('span', {})
-  cls.interfaceIndices.forEach((i, k) => {
+  for (let k = 0; k < cls.interfaceIndices.length; k++) {
+    const i = cls.interfaceIndices[k]
+    if (!budget.line(pool.className(i).length)) {
+      interfaces.append(' ', more(cls.interfaceIndices.length - k, 'span'))
+      break
+    }
     if (k) interfaces.append(', ')
     interfaces.append(classRef(i))
-  })
+  }
   const rows: [string, Node | string][] = [
     [t.fileSize, `${sizeText(env, cls.size)} (${cls.size.toLocaleString(env.locale)})`],
     [t.magic, h('span', { className: 'cv-mono' }, 'CA FE BA BE')],
@@ -93,7 +119,12 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
     const columns = kind === 'method' ? 5 : 4
     table.append(h('thead', {}, head))
     const body = h('tbody', {})
-    members.forEach((m, k) => {
+    for (let k = 0; k < members.length; k++) {
+      const m = members[k]
+      if (!budget.line(m.name.length + m.descriptor.length + 40)) {
+        body.append(h('tr', {}, h('td', { colspan: columns }, more(members.length - k))))
+        break
+      }
       const name =
         kind === 'method'
           ? h('button', { className: 'cv-a cv-mono', 'data-method': k, title: t.showBytecode }, displayName(m.name))
@@ -112,7 +143,7 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
       }
       row.append(memberAttributes(m, row, columns))
       body.append(row)
-    })
+    }
     table.append(body)
     return table
   }
@@ -121,7 +152,7 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
 
   // Class attributes.
   const attrs = h('div', {})
-  for (const a of cls.attributes) attrs.append(attributeBlock(a))
+  attributeBlocks(attrs, cls.attributes, budget)
   section(t.secAttributes, cls.attributes.length, true, cls.attributes.length ? attrs : h('p', { className: 'cv-hint' }, t.none))
 
   doc.addEventListener('click', (event) => {
@@ -142,15 +173,24 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
       return cell
     }
     const button = h('button', { className: 'cv-a cv-mono', type: 'button', 'aria-expanded': 'false', title: t.showAttributes })
-    m.attributes.forEach((a, k) => {
+    // A crafted member may carry 65,535 attributes: the names stop after a line's worth.
+    let chars = 0
+    for (let k = 0; k < m.attributes.length; k++) {
+      const a = m.attributes[k]
+      if (k && chars > NAMES_CHARS) {
+        button.append(`, … +${(m.attributes.length - k).toLocaleString(env.locale)}`)
+        break
+      }
       if (k) button.append(', ')
-      button.append(a.error ? h('span', { className: 't-bad', title: reasonFor(env, a.errorCode, a.error) }, displayName(a.name)) : displayName(a.name))
-    })
+      const shown = displayName(a.name)
+      chars += shown.length + 2
+      button.append(a.error ? h('span', { className: 't-bad', title: reasonFor(env, a.errorCode, a.error) }, shown) : shown)
+    }
     let detail: HTMLTableRowElement | undefined
     button.addEventListener('click', () => {
       if (!detail) {
         const blocks = h('td', { colspan: columns })
-        for (const a of m.attributes) blocks.append(attributeBlock(a))
+        attributeBlocks(blocks, m.attributes, new RowBudget(limit))
         detail = h('tr', { className: 'cv-attr-row' }, blocks)
         row.after(detail)
       } else detail.hidden = !detail.hidden
@@ -160,7 +200,18 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
     return cell
   }
 
-  function attributeBlock(a: AttributeInfo): HTMLElement {
+  /** Blocks of `attributes` while `rows` lasts, then a count of the rest. */
+  function attributeBlocks(into: HTMLElement, attributes: AttributeInfo[], rows: RowBudget): void {
+    for (let k = 0; k < attributes.length; k++) {
+      if (!rows.line(attributes[k].name.length + 40)) {
+        into.append(more(attributes.length - k))
+        return
+      }
+      into.append(attributeBlock(attributes[k], rows))
+    }
+  }
+
+  function attributeBlock(a: AttributeInfo, rows: RowBudget): HTMLElement {
     const block = h('div', { className: 'cv-attr' })
     block.append(
       h(
@@ -174,15 +225,45 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
     const body = h('div', { className: 'cv-attr-body' })
     block.append(body)
     const v = a.value
-    const list = (items: Node[]) => {
+    /** Items of a list, comma-separated, while `rows` lasts. */
+    const list = (count: number, item: (i: number) => { node: Node | string; chars: number }) => {
       const p = h('div', { className: 'cv-mono' })
-      items.forEach((n, k) => {
+      body.append(p)
+      for (let k = 0; k < count; k++) {
+        const { node, chars } = item(k)
+        if (!rows.line(chars)) {
+          body.append(more(count - k))
+          return
+        }
         if (k) p.append(', ')
-        p.append(n)
-      })
-      return p
+        p.append(node)
+      }
     }
     const pre = (text: string) => h('pre', { className: 'cv-pre' }, text)
+    /** Lines of one block of text while `rows` lasts. */
+    const lines = (count: number, line: (i: number) => string) => {
+      const out: string[] = []
+      for (let i = 0; i < count; i++) {
+        const text = line(i)
+        if (!rows.line(text.length)) {
+          body.append(pre(out.join('\n')), more(count - i))
+          return
+        }
+        out.push(text)
+      }
+      body.append(pre(out.join('\n')))
+    }
+    /** Rows of a table while `rows` lasts. */
+    const tableRows = (tb: HTMLElement, columns: number, count: number, row: (i: number) => { node: HTMLElement; chars: number }) => {
+      for (let i = 0; i < count; i++) {
+        const r = row(i)
+        if (!rows.line(r.chars)) {
+          tb.append(h('tr', {}, h('td', { colspan: columns }, more(count - i))))
+          return
+        }
+        tb.append(r.node)
+      }
+    }
     switch (v.kind) {
       case 'SourceFile':
       case 'Signature':
@@ -194,26 +275,32 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
         break
       case 'NestMembers':
       case 'PermittedSubclasses':
-        body.append(list(v.indices.map((i) => className(pool.className(i)))))
+        list(v.indices.length, (i) => {
+          const name = pool.className(v.indices[i])
+          return { node: className(name), chars: name.length }
+        })
         break
       case 'ModulePackages':
-        body.append(list(v.indices.map((i) => h('span', {}, displayName(pool.text(i).replace(/\//g, '.'))))))
+        list(v.indices.length, (i) => {
+          const text = displayName(pool.text(v.indices[i]).replace(/\//g, '.'))
+          return { node: h('span', {}, text), chars: text.length }
+        })
         break
       case 'InnerClasses': {
         const table = h('table', { className: 'cv-grid' }, h('thead', {}, h('tr', {}, h('th', {}, t.colInner), h('th', {}, t.colOuter), h('th', {}, t.colSimple), h('th', {}, t.colFlags))))
         const tb = h('tbody', {})
-        for (const c of v.classes) {
-          tb.append(
-            h(
-              'tr',
-              {},
-              h('td', {}, c.inner ? className(pool.className(c.inner)) : '—'),
-              h('td', {}, c.outer ? className(pool.className(c.outer)) : '—'),
-              h('td', { className: 'cv-mono' }, c.nameIndex ? displayName(pool.str(c.nameIndex)) : '—'),
-              h('td', { className: 'cv-mono' }, `${hex4(c.access)} ${javaFlags(c.access, 'inner')}`)
-            )
+        tableRows(tb, 4, v.classes.length, (i) => {
+          const c = v.classes[i]
+          const node = h(
+            'tr',
+            {},
+            h('td', {}, c.inner ? className(pool.className(c.inner)) : '—'),
+            h('td', {}, c.outer ? className(pool.className(c.outer)) : '—'),
+            h('td', { className: 'cv-mono' }, c.nameIndex ? displayName(pool.str(c.nameIndex)) : '—'),
+            h('td', { className: 'cv-mono' }, `${hex4(c.access)} ${javaFlags(c.access, 'inner')}`)
           )
-        }
+          return { node, chars: node.textContent?.length ?? 0 }
+        })
         table.append(tb)
         body.append(table)
         break
@@ -226,52 +313,73 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
       case 'BootstrapMethods': {
         const table = h('table', { className: 'cv-grid' }, h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, t.colMethod), h('th', {}, t.colArguments))))
         const tb = h('tbody', {})
-        v.methods.forEach((m, k) => {
+        tableRows(tb, 3, v.methods.length, (k) => {
+          const m = v.methods[k]
           const args = h('td', { className: 'cv-mono' })
-          m.args.forEach((x, j) => {
+          let chars = 0
+          for (let j = 0; j < m.args.length; j++) {
+            // One bootstrap method may take 65,535 arguments.
+            if (j && chars > MAX_LINE_CHARS) {
+              args.append(h('br', {}), `… +${(m.args.length - j).toLocaleString(env.locale)}`)
+              break
+            }
             if (j) args.append(h('br', {}))
-            args.append(cp(x), ` ${pool.text(x)}`)
-          })
-          tb.append(h('tr', {}, h('td', { className: 'cv-mono' }, String(k)), h('td', { className: 'cv-mono' }, cp(m.ref), ` ${pool.text(m.ref)}`), args))
+            const text = ` ${pool.text(m.args[j])}`
+            chars += text.length + 8
+            args.append(cp(m.args[j]), text)
+          }
+          const ref = ` ${pool.text(m.ref)}`
+          return { node: h('tr', {}, h('td', { className: 'cv-mono' }, String(k)), h('td', { className: 'cv-mono' }, cp(m.ref), ref), args), chars: chars + ref.length }
         })
         table.append(tb)
         body.append(table)
         break
       }
       case 'Annotations':
-        body.append(pre(v.annotations.map((x) => annotationText(x, pool, namer)).join('\n')))
+        lines(v.annotations.length, (i) => annotationText(v.annotations[i], pool, namer))
         break
       case 'TypeAnnotations':
-        body.append(pre(v.annotations.map((x) => `${annotationText(x.annotation, pool, namer)}  // ${x.target}`).join('\n')))
+        lines(v.annotations.length, (i) => `${annotationText(v.annotations[i].annotation, pool, namer)}  // ${v.annotations[i].target}`)
         break
       case 'Record':
-        body.append(pre(v.components.map((c) => `${displayName(pool.str(c.nameIndex))}: ${displayName(pool.str(c.descriptorIndex))}`).join('\n')))
+        lines(v.components.length, (i) => `${displayName(pool.str(v.components[i].nameIndex))}: ${displayName(pool.str(v.components[i].descriptorIndex))}`)
         break
       case 'Module': {
         const m = v.module
-        const lines = [`${displayName(pool.text(m.nameIndex))}${m.versionIndex ? ` @${pool.str(m.versionIndex)}` : ''}  ${flagSummary(m.access, 'module')}`]
-        for (const r of m.requires) lines.push(`requires ${displayName(pool.text(r.index))}${r.versionIndex ? ` @${pool.str(r.versionIndex)}` : ''}  ${flagSummary(r.access, 'requires')}`)
-        for (const e of m.exports) lines.push(`exports ${displayName(pool.text(e.index).replace(/\//g, '.'))}${e.to.length ? ` to ${e.to.map((x) => pool.text(x)).join(', ')}` : ''}`)
-        for (const e of m.opens) lines.push(`opens ${displayName(pool.text(e.index).replace(/\//g, '.'))}${e.to.length ? ` to ${e.to.map((x) => pool.text(x)).join(', ')}` : ''}`)
-        for (const u of m.uses) lines.push(`uses ${displayName(binaryName(pool.className(u)))}`)
-        for (const p of m.provides) lines.push(`provides ${displayName(binaryName(pool.className(p.index)))} with ${p.with.map((x) => displayName(binaryName(pool.className(x)))).join(', ')}`)
-        body.append(pre(lines.join('\n')))
+        const to = (list: number[]) => (list.length ? ` to ${joinWithin(list, (x) => pool.text(x))}` : '')
+        const head = `${displayName(pool.text(m.nameIndex))}${m.versionIndex ? ` @${pool.str(m.versionIndex)}` : ''}  ${flagSummary(m.access, 'module')}`
+        const directives: (() => string)[] = [
+          ...m.requires.map((r) => () => `requires ${displayName(pool.text(r.index))}${r.versionIndex ? ` @${pool.str(r.versionIndex)}` : ''}  ${flagSummary(r.access, 'requires')}`),
+          ...m.exports.map((e) => () => `exports ${displayName(pool.text(e.index).replace(/\//g, '.'))}${to(e.to)}`),
+          ...m.opens.map((e) => () => `opens ${displayName(pool.text(e.index).replace(/\//g, '.'))}${to(e.to)}`),
+          ...m.uses.map((u) => () => `uses ${displayName(binaryName(pool.className(u)))}`),
+          ...m.provides.map((p) => () => `provides ${displayName(binaryName(pool.className(p.index)))} with ${joinWithin(p.with, (x) => displayName(binaryName(pool.className(x))))}`)
+        ]
+        lines(directives.length + 1, (i) => (i ? directives[i - 1]() : head))
         break
       }
-      case 'SourceDebugExtension':
-        body.append(pre(v.text))
+      case 'SourceDebugExtension': {
+        // Its text is as long as the attribute: a line of it shows at most a line's worth.
+        const shown = v.text.length > MAX_LINE_CHARS ? `${v.text.slice(0, MAX_LINE_CHARS)}…` : v.text
+        if (rows.line(shown.length)) body.append(pre(shown))
+        else body.append(more(1))
         break
+      }
       case 'Marker':
         break
       case 'Code': {
         const c = v.code
         body.append(h('div', { className: 'cv-mono' }, fill(t.codeSummary, { size: t.bytes(c.code.length), stack: c.maxStack, locals: c.maxLocals })))
-        for (const inner of c.attributes) body.append(attributeBlock(inner))
+        attributeBlocks(body, c.attributes, rows)
         break
       }
       default:
         if (a.error) body.append(h('p', { className: 't-bad' }, fill(t.attributeError, { reason: reasonFor(env, a.errorCode, a.error) })))
-        if (a.bytes.length) body.append(h('pre', { className: 'cv-hex' }, hexDump(a.bytes, 512)))
+        // At most 512 bytes, 32 lines of hex.
+        if (a.bytes.length) {
+          rows.take(Math.ceil(Math.min(a.bytes.length, 512) / 16))
+          body.append(h('pre', { className: 'cv-hex' }, hexDump(a.bytes, 512)))
+        }
     }
     return block
   }

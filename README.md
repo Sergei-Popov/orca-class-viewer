@@ -67,7 +67,8 @@ Odd and broken files get a clear message instead of a blank tab:
 - **Class roots** of web and Spring Boot archives (`WEB-INF/classes`, `BOOT-INF/classes`) and of a
   `.jmod` (`classes/`) are shown as their own trees.
 - **Multi-release jars**: each `META-INF/versions/N` copy is attached to its class, with a switch
-  between the versions.
+  between the versions, when the manifest says `Multi-Release: true`; without it the JVM takes the
+  base classes only, and the overview says so.
 - **Archives inside**: `WEB-INF/lib/*.jar`, `BOOT-INF/lib/*.jar` and an Android library's
   `classes.jar` open in place (`Enter`), with a trail back.
 - **Overview**: counts of classes, packages and resources, a chart of the Java versions the
@@ -81,9 +82,11 @@ Odd and broken files get a clear message instead of a blank tab:
   `\` or a leading `/`), the earlier copies of a name, and entries named like folders that hold
   data are listed apart under **Unusual entries**, with a notice, so a crafted jar cannot show a
   decoy in place of the class that runs. The JVM reads `a/B.class/` as `a/B.class` when no entry
-  has that name, and so does the viewer. The manifest is the one `java.util.jar` (Java 21) reads:
-  the last `META-INF/MANIFEST.MF` in any capitals, with a hint when `java -jar` would not find it;
-  version folders count only as the JVM names them (`versions/11`, not `versions/011`).
+  has that name, the first of several such entries in Java 21, and so does the viewer. The
+  manifest is the one `java.util.jar` (Java 21) reads: the last `META-INF/MANIFEST.MF` in any
+  capitals, with a hint when `java -jar` would not find it (a name in other capitals, or bytes
+  after the archive's end record); version folders count only as the JVM names them, from its
+  base release 8 up (`versions/11`, not `versions/011`).
 - Selecting a class opens it with the four tabs above. Selecting a file previews it: text with
   the manifest and `.properties` keys and `.java` sources highlighted, images, or a hex dump;
   **Save…** writes the file through Orca's save dialog.

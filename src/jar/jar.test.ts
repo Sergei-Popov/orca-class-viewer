@@ -135,8 +135,9 @@ test('reads a jmod: its classes folder is the root, the rest are folders', () =>
 })
 
 test('parses manifests with continuation lines and entry sections', () => {
+  // A byte order mark first, as some editors write it.
   const m = parseManifest(
-    '﻿Manifest-Version: 1.0\r\nClass-Path: lib/a.jar lib/b\r\n .jar\r\nImplementation-Title:Demo\r\n\r\nName: demo/sky/\r\nSealed: true\r\n\r\n\r\n'
+    `${String.fromCharCode(0xfeff)}Manifest-Version: 1.0\r\nClass-Path: lib/a.jar lib/b\r\n .jar\r\nImplementation-Title:Demo\r\n\r\nName: demo/sky/\r\nSealed: true\r\n\r\n\r\n`
   )
   assert.equal(m.main.get('Class-Path'), 'lib/a.jar lib/b.jar')
   assert.equal(m.main.get('Implementation-Title'), 'Demo')
@@ -260,7 +261,63 @@ test('lists an entry named like a folder that holds data, and takes its class as
   assert.equal(buildJar(openZip(zip([{ name: 'demo/' }, cls('demo/Main')]))).folderData.length, 0)
 })
 
-// Review 2, finding 13: JarFile looks up META-INF/versions/<release>/, so 09 or 017 is never used.
+// Review 2, round 2, finding 2: of two entries named `demo/Main.class/`, java.util.zip in Java 21
+// gives the first (ZipFile.Source.getEntryPos keeps the oldest folder match), where JDK 8 gave the
+// last. What JDK 21.0.13 ran: T1 for T1 + T2, T1 for T1 + an empty folder, and for an empty
+// folder + T1 nothing (ClassFormatError: Truncated class file).
+test('takes the first of several entries named like the same folder, as Java 21 does', () => {
+  const t1 = { name: 'demo/Main.class/', data: helloClass('demo/Main').toBytes() }
+  const t2 = { name: 'demo/Main.class/', data: helloClass('demo/Main').toBytes() }
+  const folder = { name: 'demo/Main.class/' }
+  const entryOf = (model: JarModel) => findClass(model, 'demo/Main')?.entry.index
+  const apart = (model: JarModel) => model.tree.find((n) => n.id === UNUSUAL_ID)?.children.map((n) => [n.entry?.index, n.issue])
+
+  const two = buildJar(openZip(zip([t1, t2])))
+  assert.equal(entryOf(two), 0)
+  assert.deepEqual(apart(two), [
+    [0, 'folder'],
+    [1, 'unread']
+  ])
+  assert.deepEqual([two.folderData.length, two.unread.length, two.shadowed.length], [1, 1, 0])
+
+  const dataThenFolder = buildJar(openZip(zip([t1, folder])))
+  assert.equal(entryOf(dataThenFolder), 0)
+  assert.equal(dataThenFolder.classCount, 1)
+  assert.deepEqual(apart(dataThenFolder), [[0, 'folder']])
+
+  const folderThenData = buildJar(openZip(zip([folder, t1])))
+  assert.equal(entryOf(folderThenData), undefined)
+  assert.equal(folderThenData.classCount, 0)
+  assert.deepEqual(apart(folderThenData), [[1, 'unread']])
+
+  // Beside the exact name, the last copy of the slashed name is the one java.util.zip gives for it.
+  const exact = buildJar(openZip(zip([cls('demo/Main'), t1, t2])))
+  assert.equal(findClass(exact, 'demo/Main')?.entry.name, 'demo/Main.class')
+  assert.deepEqual(apart(exact), [
+    [1, 'shadowed'],
+    [2, 'folder']
+  ])
+})
+
+// Review 2, round 2, finding 2: JarFile registers a release from an entry under versions/N that is
+// not named like a folder, then finds a class's copy there under the slashed name too (JDK 21 ran V17).
+test('takes a version copy named like a folder once another entry registers its release', () => {
+  const mr = { name: 'META-INF/MANIFEST.MF', data: 'Manifest-Version: 1.0\r\nMulti-Release: true\r\n\r\n' }
+  const v17 = { name: 'META-INF/versions/17/demo/Main.class/', data: helloClass('demo/Main').toBytes() }
+  const model = buildJar(openZip(zip([mr, cls('demo/Main'), cls('META-INF/versions/17/demo/Other'), v17])))
+  assert.deepEqual(model.versions, [17])
+  assert.deepEqual(
+    findClass(model, 'demo/Main')?.node.versions?.map((v) => [v.release, v.entry.name]),
+    [[17, 'META-INF/versions/17/demo/Main.class/']]
+  )
+  // Alone, it registers no release, and the JVM never looks there.
+  const alone = buildJar(openZip(zip([mr, cls('demo/Main'), v17])))
+  assert.deepEqual(alone.versions, [])
+  assert.equal(findClass(alone, 'demo/Main')?.node.versions, undefined)
+})
+
+// Review 2, finding 13: JarFile looks up META-INF/versions/<release>/, so 09 or 017 is never used;
+// releases from 8, its base release, are (Java 21 ran a versions/8 copy).
 test('takes only the version folders java.util.jar looks up', () => {
   const mr = 'Manifest-Version: 1.0\r\nMulti-Release: true\r\n\r\n'
   const model = buildJar(
@@ -271,19 +328,39 @@ test('takes only the version folders java.util.jar looks up', () => {
         cls('META-INF/versions/09/demo/Main'),
         cls('META-INF/versions/017/demo/Main'),
         cls('META-INF/versions/8/demo/Main'),
+        cls('META-INF/versions/7/demo/Main'),
         cls('META-INF/versions/11/demo/Main'),
         { name: 'META-INF/versions/09/module-info.class', data: moduleInfo('padded') }
       ])
     )
   )
-  assert.deepEqual(model.versions, [11])
+  assert.deepEqual(model.versions, [8, 11])
   assert.deepEqual(
     findClass(model, 'demo/Main')?.node.versions?.map((v) => [v.release, v.entry.name]),
-    [[11, 'META-INF/versions/11/demo/Main.class']]
+    [
+      [8, 'META-INF/versions/8/demo/Main.class'],
+      [11, 'META-INF/versions/11/demo/Main.class']
+    ]
   )
   assert.equal(model.moduleInfo, undefined)
   // The others stay ordinary files under META-INF.
-  for (const v of ['09', '017', '8']) assert.ok([...walk(model.tree)].some((n) => n.path === `META-INF/versions/${v}/demo/Main.class`), v)
+  for (const v of ['09', '017', '7']) assert.ok([...walk(model.tree)].some((n) => n.path === `META-INF/versions/${v}/demo/Main.class`), v)
+})
+
+// Review 2, round 2, minor 1: without Multi-Release: true, JarFile takes the base classes only
+// (JDK 8 and 21 ran BASE), as shaded jars that keep their dependencies' versions folders show.
+test('attaches no version copies when the manifest does not say Multi-Release: true', () => {
+  for (const manifest of [undefined, 'Manifest-Version: 1.0\r\n\r\n', 'Manifest-Version: 1.0\r\nMulti-Release: false\r\n\r\n']) {
+    const items: ZipItem[] = [cls('demo/Main'), cls('META-INF/versions/9/demo/Main'), { name: 'META-INF/versions/11/module-info.class', data: moduleInfo('lib') }]
+    if (manifest) items.unshift({ name: 'META-INF/MANIFEST.MF', data: manifest })
+    const model = buildJar(openZip(zip(items)))
+    assert.equal(model.multiRelease, false)
+    // The overview still names the releases, to say the JVM does not use them.
+    assert.deepEqual(model.versions, [9, 11])
+    assert.equal(findClass(model, 'demo/Main')?.node.versions, undefined)
+    assert.equal(model.moduleInfo, undefined)
+    assert.ok([...walk(model.tree)].some((n) => n.path === 'META-INF/versions/9/demo/Main.class'))
+  }
 })
 
 // Review 2, finding 5: each `$` of a name cost a lookup of the prefix before it, so names of
