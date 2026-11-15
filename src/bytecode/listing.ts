@@ -7,7 +7,7 @@
 import { type AttributeInfo, type CodeAttribute, type StackMapFrame, type VerificationType, findAttribute } from '../classfile/attributes'
 import { MAX_LISTED_ROWS, RowBudget, joinWithin } from '../classfile/budget'
 import type { ClassFile, Member } from '../classfile/classfile'
-import { annotationText, elementText, makeNamer, methodDeclaration } from '../classfile/declarations'
+import { annotationRoom, annotationText, annotationsWithin, elementText, makeNamer, methodDeclaration } from '../classfile/declarations'
 import { flagSummary } from '../classfile/flags'
 import { displayName, stringText } from '../classfile/names'
 import type { ConstantPool } from '../classfile/pool'
@@ -41,6 +41,8 @@ export type ListingLine = {
   cut?: number
   /** On the line that stands for what a full listing left out: entries of the list above, or attributes. */
   omitted?: { count: number; of: 'entries' | 'attributes' }
+  /** On a method's first line that a full listing writes short: its name and descriptor only. */
+  short?: true
 }
 
 /** What one listing shares between its methods. */
@@ -48,7 +50,7 @@ type Listing = {
   namer: Namer
   /** Rows of code, tables and attributes. */
   budget?: RowBudget
-  /** Rows of declarations: past them, a method's first line is short. */
+  /** Rows of declarations, a tenth of the listing's: past them, a method's first line is short. */
   headers?: RowBudget
   /** Constant comments by pool index, each written once however many instructions use it. */
   comments: Map<number, string>
@@ -59,7 +61,7 @@ type Listing = {
 const listingOf = (cls: ClassFile, limit?: number): Listing => ({
   namer: makeNamer(cls, true),
   budget: limit === undefined ? undefined : new RowBudget(limit),
-  headers: limit === undefined ? undefined : new RowBudget(limit),
+  headers: limit === undefined ? undefined : new RowBudget(Math.ceil(limit / 10)),
   comments: new Map(),
   listed: []
 })
@@ -255,6 +257,8 @@ function attributeLines(cls: ClassFile, attributes: AttributeInfo[], indent: str
   const pool = cls.pool
   const namer = listing.namer
   const out = new Sink(listing.budget, method)
+  // A member's parameter annotations, in all its attributes, share one room, as in its declaration.
+  const room = annotationRoom()
   const remaining = (from: number) => {
     let n = 0
     for (let k = from; k < attributes.length; k++) if (attributes[k].value.kind !== skip) n++
@@ -293,7 +297,7 @@ function attributeLines(cls: ClassFile, attributes: AttributeInfo[], indent: str
       case 'ParameterAnnotations':
         ok = entries([s(`${indent}${name}:`, 'key')], v.parameters.length, (i) => [
           s(`${indent}  parameter ${i}: `),
-          s(joinWithin(v.parameters[i], (ann) => annotationText(ann, pool, namer), ' ') || '—', 'java')
+          s(annotationsWithin([v.parameters[i]], pool, namer, room) || '—', 'java')
         ])
         break
       case 'TypeAnnotations':
@@ -477,7 +481,7 @@ export function methodListing(cls: ClassFile, index: number, listing: Listing = 
   const out: ListingLine[] = []
   // Every method keeps a first line with its anchor, so "Go to method" finds it.
   if (listing.headers?.cut) {
-    out.push({ segs: [s(`${clip(displayName(m.name))}${clip(displayName(m.descriptor))}`)], anchor: `m${index}`, method: index })
+    out.push({ segs: [s(`${clip(displayName(m.name))}${clip(displayName(m.descriptor))}`)], anchor: `m${index}`, method: index, short: true })
   } else {
     const head: ListingLine[] = [
       { segs: [s(`${methodDeclaration(cls, m, listing.namer)};`, 'java')], anchor: `m${index}`, method: index },

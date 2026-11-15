@@ -1,15 +1,21 @@
 // Classes of a jar read only to resolve names (an outline's member and local classes, the module
 // descriptor). Two limits keep a crafted archive of small classes padded to megabytes in check:
-// the classes held stay within a byte budget, oldest dropped first, and one view unpacks at most
-// a read budget of classes it does not find held.
+// the classes held stay within a budget of their parsed size, oldest dropped first, and one view
+// unpacks at most a read budget of classes it does not find held.
 
 import { type ClassFile, parseClass } from '../classfile/classfile'
 import type { Zip, ZipEntry } from '../zip/zip'
 
 /** Larger classes are not read to resolve names; member classes are rarely past 100 KiB. */
 export const RESOLVE_LIMIT = 1024 * 1024
-/** Bytes of parsed classes held at most; past it the oldest are dropped. */
-export const CACHE_BUDGET = 64 * 1024 * 1024
+/**
+ * A parsed class takes up to about this many times its bytes in memory: a crafted one whose 65,535
+ * empty attributes a member each become an object does, in the frame's V8; real classes take less.
+ */
+export const MODEL_FACTOR = 20
+/** The parsed size, `MODEL_FACTOR` times the bytes, of the classes held at most; past it the
+ *  oldest are dropped. An outline holds only the members it is writing, so this bounds it too. */
+export const CACHE_BUDGET = 128 * 1024 * 1024
 /** Bytes one view (one class's outline) may unpack to resolve names. */
 export const READ_BUDGET = 64 * 1024 * 1024
 const MAX_CLASSES = 2000
@@ -53,7 +59,7 @@ export class ClassCache {
         const read = this.zip.read(entry, this.limit)
         if (!read.truncated) {
           cls = parseClass(read.bytes)
-          size = read.bytes.length
+          size = read.bytes.length * MODEL_FACTOR
         }
       } catch {
         cls = null
@@ -77,7 +83,7 @@ export class ClassCache {
     }
   }
 
-  /** Bytes of the classes held now. */
+  /** The parsed size of the classes held now, `MODEL_FACTOR` times their bytes. */
   get bytes(): number {
     return this.held
   }

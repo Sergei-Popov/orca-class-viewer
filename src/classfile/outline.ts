@@ -2,7 +2,7 @@
 // this is not a decompiler. Member classes from the same archive nest inside their outer class.
 
 import { type AttributeInfo, type InnerClassEntry, findAttribute } from './attributes'
-import { MAX_LISTED_ROWS, RowBudget, joinWithin } from './budget'
+import { MAX_LISTED_ROWS, MAX_MEMBER_ANNOTATIONS, RowBudget, joinWithin } from './budget'
 import type { FormatErrorCode } from './bytes'
 import type { ClassFile, Member } from './classfile'
 import {
@@ -115,7 +115,7 @@ export type OutlineOptions = {
 }
 
 /** A member's annotations past this many are counted in one comment: real code has a handful. */
-export const MAX_ANNOTATION_LINES = 100
+export const MAX_ANNOTATION_LINES = MAX_MEMBER_ANNOTATIONS
 
 const fill = (template: string, values: Record<string, string | number>) =>
   template.replace(/\{(\w+)\}/g, (m, k: string) => (k in values ? String(values[k]) : m))

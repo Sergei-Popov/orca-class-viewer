@@ -150,6 +150,98 @@ test('keeps every tab within its rows for a class of six million annotations', (
   })
 })
 
+/**
+ * `methods` static methods of 255 int parameters, each parameter with 257 annotations @A, whose
+ * code has a LocalVariableTable of 65,535 variables that name no parameter (they start at 1);
+ * with `signature`, a Signature of one parameter, which sends the declaration to that table.
+ */
+function parameterFlood(methods: number, signature: boolean): ClassFile {
+  const w = new ClassWriter({ name: 'demo/Params' })
+  const type = w.pool.utf8('LA;')
+  const annotations = new Uint8Array(1 + 255 * (2 + 257 * 4))
+  annotations[0] = 255
+  for (let p = 0, at = 1; p < 255; p++) {
+    annotations.set(u2(257), at)
+    at += 2
+    for (let a = 0; a < 257; a++, at += 4) annotations.set(u2(type), at)
+  }
+  const [x, int] = [w.pool.utf8('x'), w.pool.utf8('I')]
+  const vars = new Uint8Array(2 + 65535 * 10)
+  vars.set(u2(65535))
+  for (let i = 0; i < 65535; i++) vars.set([...u2(1), ...u2(0), ...u2(x), ...u2(int), ...u2(i % 255)], 2 + i * 10)
+  const sig = signature ? [w.indexAttr('Signature', w.pool.utf8('(I)V'))] : []
+  const descriptor = `(${'I'.repeat(255)})V`
+  const code = w.code({ code: asm('return'), attributes: [{ name: 'LocalVariableTable', body: vars }] })
+  for (let k = 0; k < methods; k++) w.method({ access: 9, name: `m${k}`, descriptor, attributes: [{ name: 'RuntimeVisibleParameterAnnotations', body: annotations }, ...sig, code] })
+  return parseClass(w.toBytes())
+}
+
+// Review 2, round 3: 185 methods of 255 parameters with 257 annotations each took 5 to 8 s and
+// 2 to 3.5 GB on the Outline and Bytecode tabs, and a 65,535-variable LocalVariableTable was
+// scanned once per parameter, twice for a Signature (more than 5 s for 70 methods).
+test('writes 100 parameter annotations a member and reads the LocalVariableTable once a method', () => {
+  for (const signature of [false, true]) {
+    const cls = parameterFlood(20, signature)
+    let started = Date.now()
+    const outline = tabLines(cls, 'outlineLines')
+    const outlineTook = Date.now() - started
+    started = Date.now()
+    const bytecode = tabLines(cls, 'listingLines')
+    const bytecodeTook = Date.now() - started
+    assert.ok(outlineTook < 500, `Outline: ${outlineTook} ms`)
+    // Most of it is a million rows of the tables.
+    assert.ok(bytecodeTook < 3000, `Bytecode: ${bytecodeTook} ms`)
+    // 20 tables of 65,535 variables are past the Bytecode tab's million rows.
+    assert.deepEqual([outline.notices, bytecode.notices], [[], ['The listing is cut']])
+    const declaration = outline.lines.map((l) => l.text).find((t) => t.includes(' m0(')) ?? ''
+    assert.equal(declaration.split('@A').length - 1, 100)
+    if (signature) {
+      // The Signature's one parameter is the first: 100 of its annotations, and a count of the rest.
+      assert.match(declaration, /@A … \/\* \+157 \*\/ int arg0\) \{/)
+    } else {
+      assert.ok(declaration.includes('@A … /* +157 */ int arg0, … /* +257 */ int arg1, … /* +257 */ int arg2,'), declaration.slice(0, 200))
+      assert.ok(declaration.endsWith('… /* +257 */ int arg254) { /* compiled code */ }'), declaration.slice(-200))
+    }
+    const texts = bytecode.lines.map((l) => l.text)
+    assert.equal(texts.find((t) => t.startsWith('    parameter 0: '))?.split('@A').length, 101)
+    assert.ok(texts.includes('    parameter 1: … /* +257 */'))
+  }
+})
+
+// Review 2, round 3: one annotation's text stopped at 10,000 characters with a bare "…", which
+// shortened two real kotlin-stdlib @Metadata lines without a word.
+test('counts the values an annotation too long to write leaves out', () => {
+  const w = new ClassWriter({ name: 'demo/Long' })
+  const one = w.pool.int(1)
+  const values = new Array(65535).fill(0).flatMap(() => [0x49, ...u2(one)])
+  w.attribute({ name: 'RuntimeVisibleAnnotations', body: [...u2(1), ...u2(w.pool.utf8('LB;')), ...u2(1), ...u2(w.pool.utf8('value')), 0x5b, ...u2(65535), ...values] })
+  const line = buildOutline(parseClass(w.toBytes())).lines.map((l) => l.text).find((t) => t.startsWith('@B(')) ?? ''
+  const more = /, … \/\* \+(\d+) \*\/\}\)$/.exec(line)
+  assert.ok(more, line.slice(-100))
+  const shown = line.match(/\b1\b/g)?.length ?? 0
+  assert.ok(shown > 3000 && line.length < 10_100, `${shown} values, ${line.length} characters`)
+  assert.equal(shown + Number(more?.[1]), 65535)
+})
+
+// Review 2, round 3: past the declarations' rows a method's first line was its name and
+// descriptor alone, without a notice; and the declarations could take as many rows as the rest.
+test('says when a method’s declaration is left out of the listing', () => {
+  const w = new ClassWriter({ name: 'demo/Names' })
+  // 200 methods named with 65,535 characters: about 560 rows each, past a tenth of the budget.
+  for (let k = 0; k < 200; k++) w.method({ access: 0x401, name: 'n'.repeat(65535), descriptor: `(${'I'.repeat(k)})V` })
+  const cls = parseClass(w.toBytes())
+  const { lines, notices } = tabLines(cls, 'listingLines')
+  assert.deepEqual(notices, ['The listing is cut'])
+  const short = lines.filter((l) => l.text.endsWith('  // declaration not listed: the listing is full'))
+  const full = lines.filter((l) => l.text.startsWith('public abstract void nnn'))
+  assert.equal(short.length + full.length, 200)
+  assert.ok(full.length > 100 && short.length > 0, `${full.length} full, ${short.length} short`)
+  for (let k = 0; k < 200; k++) assert.ok(lines.some((l) => l.anchor === `m${k}`), `m${k}`)
+  // The declarations stay within a tenth of the rows.
+  const chars = full.reduce((n, l) => n + l.text.length, 0)
+  assert.ok(chars <= (MAX_LISTED_ROWS / 10) * 120 + 70_000, `${chars} characters`)
+})
+
 // The Outline's own budget: past it, writing stops with a comment and the braces still close.
 test('stops the outline at its row limit and closes what it opened', () => {
   const w = new ClassWriter({ name: 'demo/Wide' })

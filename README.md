@@ -67,8 +67,10 @@ Odd and broken files get a clear message instead of a blank tab:
 - **Class roots** of web and Spring Boot archives (`WEB-INF/classes`, `BOOT-INF/classes`) and of a
   `.jmod` (`classes/`) are shown as their own trees.
 - **Multi-release jars**: each `META-INF/versions/N` copy is attached to its class, with a switch
-  between the versions, when the manifest says `Multi-Release: true`; without it the JVM takes the
-  base classes only, and the overview says so.
+  between the versions, when the manifest says `Multi-Release: true` as `java.util.jar` reads it;
+  without it the JVM takes the base classes only, and the overview says so. A class that has
+  copies under `versions/N` only, as some in bcprov and log4j-api do, is a class of the jar too:
+  links and `Main-Class` find it, and its switch starts from its oldest copy.
 - **Archives inside**: `WEB-INF/lib/*.jar`, `BOOT-INF/lib/*.jar` and an Android library's
   `classes.jar` open in place (`Enter`), with a trail back.
 - **Overview**: counts of classes, packages and resources, a chart of the Java versions the
@@ -85,8 +87,9 @@ Odd and broken files get a clear message instead of a blank tab:
   has that name, the first of several such entries in Java 21, and so does the viewer. The
   manifest is the one `java.util.jar` (Java 21) reads: the last `META-INF/MANIFEST.MF` in any
   capitals, with a hint when `java -jar` would not find it (a name in other capitals, or bytes
-  after the archive's end record); version folders count only as the JVM names them, from its
-  base release 8 up (`versions/11`, not `versions/011`).
+  after the archive's end record), and its attribute names match in any capitals
+  (`main-class:`); version folders count only as the JVM names them, from its base release 8 up
+  (`versions/11`, not `versions/011`).
 - Selecting a class opens it with the four tabs above. Selecting a file previews it: text with
   the manifest and `.properties` keys and `.java` sources highlighted, images, or a hex dump;
   **Save…** writes the file through Orca's save dialog.
@@ -111,13 +114,18 @@ Odd and broken files get a clear message instead of a blank tab:
   overview's version chart fills in while you browse. Classes are read when you select them.
 - Archives inside open up to 64 MiB each and 4 levels deep; text previews show the first 2 MiB,
   images up to 16 MiB, and other files the first 4 KiB in hex. Code lines are cut at 4,000
-  characters on screen. Classes read only for the Outline's names are limited to 1 MiB each, and
-  one class's views unpack at most 64 MiB of them. Folders more than 128 levels deep are shown as
-  one.
-- The Bytecode tab lists up to 1,000,000 instructions and table rows per class; past that, the
-  remaining methods keep their declaration and flags, their code is left out, and a notice says
-  so. The Constant pool searches the same instructions for uses. A method whose code is longer
-  than 65,535 bytes, which the JVM rejects, is shown as damaged.
+  characters on screen. Classes read only for the Outline's names are limited to 1 MiB each, one
+  class's views unpack at most 64 MiB of them, and the jar keeps at most 128 MiB of them as
+  parsed, counted at 20 times their size. Folders more than 128 levels deep are shown as one.
+- The Bytecode tab lists up to 1,000,000 instructions and table rows per class, and a tenth as
+  many rows of declarations; past them, code is left out, a method's first line keeps only its
+  name and descriptor, and a notice says so. The Constant pool searches the same instructions for
+  uses. A method whose code is longer than 65,535 bytes, which the JVM rejects, is shown as
+  damaged.
+- The Outline counts a member's annotations past 100 rather than writing them, and both tabs do
+  the same for its parameters' annotations past 100, all parameters together. One annotation
+  stops near 10,000 characters with a count of the values it leaves out (`… /* +12 */`), as
+  Kotlin's `@Metadata` of a very large file class does.
 - ZIP entries that are encrypted or use methods other than stored and Deflate (jars never do) are
   listed but not read.
 - Orca opens an empty file in its own text editor, so the viewer's "file is empty" message is not
@@ -125,6 +133,19 @@ Odd and broken files get a clear message instead of a blank tab:
 - The Outline is not a decompiler: method bodies are shown as bytecode, not as Java statements.
   Full decompilation is planned for a later version; `src/decompiler/` is the place for it.
 - Android `.dex` files are not read; an `.aar`'s `classes.jar` is.
+
+### Known limits (crafted files only)
+
+These need a file made by hand to show; no compiler or build tool writes one.
+
+- In the Structure tab each member's attributes are built when you open them, up to 50,000 rows
+  each, and stay built: opening those of many members that each hold tens of thousands of
+  attributes takes a second or two per click and adds up.
+- A manifest `java.util.jar` cannot read at all (a header without a space after its colon, such
+  as `Main-Class:demo.Main`, or a line that is no header) is shown as read, without a hint that
+  `java -jar` and the class path will not use the jar.
+- An empty folder at a version path, such as `META-INF/versions/17/demo/Main.class/`, is what the
+  JVM finds for that release, and the class then fails to load; the viewer shows the base class.
 
 ## Privacy
 

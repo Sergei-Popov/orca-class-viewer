@@ -38,14 +38,22 @@ export function poolUsage(cls: ClassFile, limit = MAX_LISTED_ROWS): PoolUsage {
   const usage: PoolUsage = Array.from({ length: pool.entries.length }, () => ({ referredBy: [], code: [], sites: [] }))
   const listed = codeListed(cls, limit)
   const valid = (index: number) => index > 0 && index < usage.length
+  // Each site once an entry: 65,535 annotations of one type in one attribute are one use of its
+  // name, and so are 65,535 attributes that take turns between two uses of one entry.
+  const seen = new Map<number, Set<string>>()
   const add = (index: number, at: UseSite, ...steps: UseStep[]) => {
     if (!valid(index)) return
     const sites = usage[index].sites
     const path = [...at.path, ...steps]
     const last = sites[sites.length - 1]
-    // A site once in a row: 65,535 annotations of one type in one attribute are one use of its name.
-    const repeated = last && last.owner === at.owner && last.name === at.name && last.path.length === path.length && path.every((step, i) => sameStep(step, last.path[i]))
-    if (!repeated) sites.push({ ...at, path })
+    // The same site as the last one is the common case, and needs no key.
+    if (last && last.owner === at.owner && last.name === at.name && last.path.length === path.length && path.every((step, i) => sameStep(step, last.path[i]))) return
+    const key = [at.owner, at.name ?? '', ...path.map((step) => (typeof step === 'string' ? step : `\u0001${step.part}`))].join('\u0000')
+    let keys = seen.get(index)
+    if (!keys) seen.set(index, (keys = new Set()))
+    if (keys.has(key)) return
+    keys.add(key)
+    sites.push({ ...at, path })
   }
   const within = (at: UseSite, step: UseStep): UseSite => ({ ...at, path: [...at.path, step] })
 

@@ -41,6 +41,12 @@ export class RowBudget {
   }
 }
 
+/**
+ * A member's annotations past this many are counted, not written: real code has a handful, and a
+ * crafted method gives each of 255 parameters 65,535.
+ */
+export const MAX_MEMBER_ANNOTATIONS = 100
+
 /** A list written into one line stops with "…" past this many characters: it may name 65,535 classes. */
 export const MAX_LINE_CHARS = 100_000
 

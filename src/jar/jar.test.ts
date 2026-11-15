@@ -314,6 +314,14 @@ test('takes a version copy named like a folder once another entry registers its 
   const alone = buildJar(openZip(zip([mr, cls('demo/Main'), v17])))
   assert.deepEqual(alone.versions, [])
   assert.equal(findClass(alone, 'demo/Main')?.node.versions, undefined)
+  // Review 2, round 3: JarFile registers the release from META-INF/ and versions/ in any ASCII
+  // capitals (JDK 21 ran V17 with Versions/17/x.txt or meta-inf/versions/17/x.txt beside it).
+  for (const other of ['META-INF/Versions/17/x.txt', 'meta-inf/versions/17/x.txt', 'META-ıNF/versions/17/x.txt']) {
+    const cased = buildJar(openZip(zip([mr, cls('demo/Main'), { name: other, data: 'x' }, v17])))
+    const registered = !other.includes('ı')
+    assert.deepEqual(cased.versions, registered ? [17] : [], other)
+    assert.equal(findClass(cased, 'demo/Main')?.node.versions?.[0]?.entry.name, registered ? v17.name : undefined, other)
+  }
 })
 
 // Review 2, finding 13: JarFile looks up META-INF/versions/<release>/, so 09 or 017 is never used;
@@ -361,6 +369,54 @@ test('attaches no version copies when the manifest does not say Multi-Release: t
     assert.equal(model.moduleInfo, undefined)
     assert.ok([...walk(model.tree)].some((n) => n.path === 'META-INF/versions/9/demo/Main.class'))
   }
+})
+
+// Review 2, round 3: java.util.jar matches attribute names in any ASCII case (JDK 21 ran the
+// versions/9 copy for 'multi-release: true', 'MULTI-RELEASE: TRUE' and 'Multi-release: true', and
+// java -jar ran a 'main-class:'), and JarFile.checkForSpecialAttributes reads Multi-Release strictly.
+test('reads manifest names in any case, and Multi-Release as JarFile does', () => {
+  const build = (main: string, rest = '') =>
+    buildJar(openZip(zip([{ name: 'META-INF/MANIFEST.MF', data: `Manifest-Version: 1.0\r\n${main}\r\n\r\n${rest}` }, cls('demo/Main'), cls('META-INF/versions/9/demo/Main')])))
+  const versions = (model: JarModel) => findClass(model, 'demo/Main')?.node.versions?.map((v) => v.release)
+  for (const line of ['multi-release: true', 'MULTI-RELEASE: TRUE', 'Multi-release: true', 'Multi-Release: True', 'Multi-Release: false\r\nmulti-release: true']) {
+    const model = build(line)
+    assert.equal(model.multiRelease, true, line)
+    assert.deepEqual(versions(model), [9], line)
+  }
+  // JDK 21 said false and ran the base class: a space after the value, two before it, a value
+  // continued on the next line, a later line that says false, and a per-entry section.
+  for (const [main, rest] of [['Multi-Release: true '], ['Multi-Release:  true'], ['Multi-Release: tr\r\n ue'], ['Multi-Release: true\r\nMULTI-RELEASE: false'], ['X: 1', 'Name: demo/Main.class\r\nMulti-Release: true\r\n\r\n']]) {
+    const model = build(main, rest)
+    assert.equal(model.multiRelease, false, main)
+    assert.equal(versions(model), undefined, main)
+  }
+  for (const key of ['main-class', 'MAIN-CLASS', 'Main-class']) assert.equal(build(`${key}: demo.Main`).manifest?.main.get('Main-Class'), 'demo.Main', key)
+  assert.equal(parseManifest('X: 1\r\n\r\nName: a/B.class\r\nsealed: true\r\n\r\n').entries.get('a/B.class')?.get('Sealed'), 'true')
+})
+
+// Review 2, round 3: JarFile finds a class that has copies under versions/N only (JDK 21 ran
+// META-INF/versions/17/demo/Only.class as the Main-Class); bcprov, the JUnit console and log4j-api
+// hold such classes.
+test('indexes a class a multi-release jar has only under version folders', () => {
+  const mr = { name: 'META-INF/MANIFEST.MF', data: 'Manifest-Version: 1.0\r\nMain-Class: demo.Only\r\nMulti-Release: true\r\n\r\n' }
+  const slashed = { name: 'META-INF/versions/17/demo/Slash.class/', data: helloClass('demo/Slash').toBytes() }
+  const items = [mr, cls('demo/Main'), cls('META-INF/versions/17/demo/Only'), cls('META-INF/versions/11/demo/Only'), cls('META-INF/versions/11/demo/Main'), slashed]
+  const model = buildJar(openZip(zip(items)))
+  const only = findClass(model, 'demo/Only')
+  assert.equal(only?.entry.name, 'META-INF/versions/11/demo/Only.class')
+  assert.equal(only?.root, '')
+  assert.equal(only?.node.release, 11)
+  assert.deepEqual(only?.node.versions?.map((v) => [v.release, v.entry.name]), [[17, 'META-INF/versions/17/demo/Only.class']])
+  // It is the node the tree lists under META-INF/versions/11.
+  assert.ok([...walk(model.tree)].some((n) => n === only?.node && n.id === 'c:META-INF/versions/11/demo/Only.class'))
+  // One named like a folder is the node listed apart.
+  assert.equal(findClass(model, 'demo/Slash')?.node.id, `x:${items.indexOf(slashed)}`)
+  assert.equal(findClass(model, 'demo/Main')?.node.release, undefined)
+  assert.equal(model.classCount, 3)
+  // Without Multi-Release: true the JVM does not look there.
+  const plain = buildJar(openZip(zip(items.slice(1))))
+  assert.equal(findClass(plain, 'demo/Only'), undefined)
+  assert.equal(plain.classCount, 1)
 })
 
 // Review 2, finding 5: each `$` of a name cost a lookup of the prefix before it, so names of

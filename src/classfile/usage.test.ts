@@ -53,6 +53,21 @@ test('names use sites in English and Russian', () => {
   assert.equal(useSiteText(stringsFor('ru'), site), 'метод run · Code · таблица исключений')
 })
 
+// Review 2, round 3: 60 fields whose 65,535 attributes take turns between an unknown attribute
+// named by an entry and a Signature naming the same entry gave it 3.9 million sites (1.9 GB).
+test('keeps each use site of an entry once, even when its uses take turns', () => {
+  const w = new ClassWriter({ name: 'demo/Turns' })
+  const shared = w.pool.utf8('Ljava/lang/String;')
+  const attributes = []
+  for (let i = 0; i < 2000; i++) attributes.push({ name: 'Ljava/lang/String;', body: [] }, w.indexAttr('Signature', shared))
+  for (let f = 0; f < 3; f++) w.field({ access: 1, name: `f${f}`, descriptor: 'Ljava/lang/Object;', attributes })
+  const sites = poolUsage(parseClass(w.toBytes()))[shared].sites
+  assert.deepEqual(
+    sites.map((s) => useSiteText(stringsFor('en'), s)),
+    ['f0', 'f1', 'f2'].flatMap((f) => [`field ${f} · Ljava/lang/String; · attribute name`, `field ${f} · Signature`])
+  )
+})
+
 test('a damaged class still gets a usage list for every entry', () => {
   const { w } = counter()
   const bytes = w.toBytes()

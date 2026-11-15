@@ -2,7 +2,7 @@
 // flags, annotations and parameter names (MethodParameters or LocalVariableTable).
 
 import { type Annotation, type ElementValue, findAttribute } from './attributes'
-import { joinWithin, listWithin } from './budget'
+import { MAX_LINE_CHARS, MAX_MEMBER_ANNOTATIONS, joinWithin, listWithin } from './budget'
 import type { ClassFile, Member } from './classfile'
 import { ACC, javaModifiers } from './flags'
 import { displayName, javaChar, javaString } from './names'
@@ -118,8 +118,9 @@ function constValue(pool: ConstantPool, v: Extract<ElementValue, { index: number
 }
 
 /**
- * One annotation's text stops near this many characters, its arrays and elements ending in "…":
- * a few bytes of a class file make an array of 65,535 values, each a string of 200 characters.
+ * One annotation's text stops near this many characters, its arrays and elements ending in a
+ * count of the values left out: a few bytes of a class file make an array of 65,535 values, each a
+ * string of 200 characters. Kotlin's @Metadata d2 of a big file class runs past it too.
  */
 export const MAX_ANNOTATION_TEXT = 10_000
 
@@ -127,6 +128,9 @@ export const MAX_ANNOTATION_TEXT = 10_000
 type Room = { left: number }
 
 const room = (): Room => ({ left: MAX_ANNOTATION_TEXT })
+
+/** Stands for `n` values, annotations or elements left out: `… /* +12 *\/`. */
+export const leftOut = (n: number): string => `… /* +${n} */`
 
 export function elementText(v: ElementValue, pool: ConstantPool, namer: Namer, depth = 0, left: Room = room()): string {
   let text: string
@@ -146,7 +150,7 @@ export function elementText(v: ElementValue, pool: ConstantPool, namer: Namer, d
       for (let i = 0; i < v.values.length; i++) {
         if (i) {
           if (left.left <= 0) {
-            out += ', …'
+            out += `, ${leftOut(v.values.length - i)}`
             break
           }
           out += ', '
@@ -177,7 +181,7 @@ export function annotationText(a: Annotation, pool: ConstantPool, namer: Namer, 
   for (let i = 0; i < a.elements.length; i++) {
     if (i) {
       if (left.left <= 0) {
-        out += ', …'
+        out += `, ${leftOut(a.elements.length - i)}`
         break
       }
       out += ', '
@@ -199,9 +203,39 @@ export function annotationText(a: Annotation, pool: ConstantPool, namer: Namer, 
   return `@${name}(${out})`
 }
 
-/** Annotations written one after another in a declaration, ending in "…" when they would make a huge line. */
+/** What a member may still write of its annotations in a row: how many, and how many characters. */
+export type AnnotationRoom = { count: number; chars: number }
+
+export const annotationRoom = (): AnnotationRoom => ({ count: MAX_MEMBER_ANNOTATIONS, chars: MAX_LINE_CHARS })
+
+/**
+ * Annotations written one after another, from each list in turn, while `room` lasts; the ones past
+ * it are counted at the end. A member shares one room between its parameters, so 255 parameters
+ * of 257 annotations each write 100 of them, not 65,535.
+ */
+export function annotationsWithin(lists: readonly (readonly Annotation[] | undefined)[], pool: ConstantPool, namer: Namer, room: AnnotationRoom): string {
+  const parts: string[] = []
+  let skipped = 0
+  for (const list of lists) {
+    if (!list) continue
+    for (let j = 0; j < list.length; j++) {
+      if (room.count <= 0 || room.chars <= 0) {
+        skipped += list.length - j
+        break
+      }
+      const text = annotationText(list[j], pool, namer)
+      parts.push(text)
+      room.count--
+      room.chars -= text.length + 1
+    }
+  }
+  if (skipped) parts.push(leftOut(skipped))
+  return parts.join(' ')
+}
+
+/** Annotations written one after another in a declaration, counting the rest past a member's share. */
 export function inlineAnnotations(list: readonly Annotation[], pool: ConstantPool, namer: Namer): string {
-  return joinWithin(list, (a) => annotationText(a, pool, namer), ' ')
+  return annotationsWithin([list], pool, namer, annotationRoom())
 }
 
 /** Annotations from the visible and invisible attributes of a member or class. */
@@ -255,8 +289,22 @@ export type MethodParts = {
   throws: string[]
 }
 
+/**
+ * For each slot, the name index of the LocalVariableTable's first variable there that starts at 0:
+ * the parameter's name. Made once a method, as a scan of the table per parameter costs 255 × 65,535
+ * in a crafted one; undefined without a table.
+ */
+function parameterSlots(method: Member): Map<number, number> | undefined {
+  const code = findAttribute(method.attributes, 'Code')
+  const lvt = code && findAttribute(code.value.code.attributes, 'LocalVariableTable')
+  if (!lvt) return undefined
+  const slots = new Map<number, number>()
+  for (const v of lvt.value.variables) if (v.start === 0 && !slots.has(v.slot)) slots.set(v.slot, v.nameIndex)
+  return slots
+}
+
 /** Parameter names from MethodParameters, else LocalVariableTable, else `arg0`, `arg1`… */
-function parameterNames(cls: ClassFile, method: Member, descriptor: MethodType | undefined): (string | undefined)[] {
+function parameterNames(cls: ClassFile, method: Member, descriptor: MethodType | undefined, slots: Map<number, number> | undefined): (string | undefined)[] {
   const count = descriptor?.params.length ?? 0
   const names: (string | undefined)[] = new Array(count).fill(undefined)
   const mp = findAttribute(method.attributes, 'MethodParameters')
@@ -266,14 +314,12 @@ function parameterNames(cls: ClassFile, method: Member, descriptor: MethodType |
     })
     if (names.every((n) => n !== undefined)) return names
   }
-  const code = findAttribute(method.attributes, 'Code')
-  const lvt = code && findAttribute(code.value.code.attributes, 'LocalVariableTable')
-  if (lvt && descriptor) {
+  if (slots && descriptor) {
     let slot = method.access & ACC.STATIC ? 0 : 1
     descriptor.params.forEach((t, i) => {
       if (names[i] === undefined) {
-        const v = lvt.value.variables.find((x) => x.slot === slot && x.start === 0)
-        if (v) names[i] = cls.pool.utf8(v.nameIndex)
+        const nameIndex = slots.get(slot)
+        if (nameIndex !== undefined) names[i] = cls.pool.utf8(nameIndex)
       }
       slot += t.kind === 'base' && (t.name === 'long' || t.name === 'double') ? 2 : 1
     })
@@ -307,7 +353,7 @@ function erasesTo(signature: JType, descriptor: JType): boolean {
  * else the LocalVariableTable, which names only declared parameters; else the run of descriptor
  * parameters the Signature's types erase to; else the last ones.
  */
-function sourceParameters(cls: ClassFile, method: Member, descriptor: MethodType | undefined, shape: MethodType): number[] {
+function sourceParameters(cls: ClassFile, method: Member, descriptor: MethodType | undefined, shape: MethodType, slots: Map<number, number> | undefined): number[] {
   const k = shape.params.length
   const n = descriptor?.params.length ?? k
   const run = (skip: number) => shape.params.map((_, i) => skip + i)
@@ -317,14 +363,12 @@ function sourceParameters(cls: ClassFile, method: Member, descriptor: MethodType
     const real = mp.value.parameters.flatMap((p, i) => (p.access & SYNTHETIC_PARAMETER ? [] : [i]))
     if (real.length === k) return real
   }
-  const code = findAttribute(method.attributes, 'Code')
-  const lvt = code && findAttribute(code.value.code.attributes, 'LocalVariableTable')
-  if (lvt) {
+  if (slots) {
     const real: number[] = []
     let slot = method.access & ACC.STATIC ? 0 : 1
     descriptor.params.forEach((t, i) => {
-      const v = lvt.value.variables.find((x) => x.slot === slot && x.start === 0)
-      const name = v && cls.pool.utf8(v.nameIndex)
+      const nameIndex = slots.get(slot)
+      const name = nameIndex === undefined ? undefined : cls.pool.utf8(nameIndex)
       if (name && !/^(this|val)\$/.test(name)) real.push(i)
       slot += isWide(t) ? 2 : 1
     })
@@ -351,8 +395,11 @@ export function methodParts(cls: ClassFile, method: Member, namer: Namer, params
   if (!shape) {
     return { typeParams: '', returns: '', name: `${name} /* ${displayName(method.descriptor)} */`, params: [], paramTypes: [], throws: [] }
   }
-  const names = parameterNames(cls, method, descriptor)
-  const at = sourceParameters(cls, method, descriptor, shape)
+  // Names, and which descriptor parameter each one is, only for a declaration with parameters:
+  // "Go to method" labels need the types alone.
+  const slots = params ? parameterSlots(method) : undefined
+  const names = params ? parameterNames(cls, method, descriptor, slots) : []
+  const at = params ? sourceParameters(cls, method, descriptor, shape, slots) : []
   const declared = descriptor?.params.length ?? shape.params.length
   const paramAnnotations = method.attributes
     .filter((a) => a.value.kind === 'ParameterAnnotations')
@@ -362,18 +409,16 @@ export function methodParts(cls: ClassFile, method: Member, namer: Namer, params
   const paramTypes = shape.params.map((t, i) =>
     varargs && i === shape.params.length - 1 && t.kind === 'array' ? `${namer.type(t.of)}...` : namer.type(t)
   )
+  // The parameters share one member's room for annotations; a parameter counts those past it.
+  const room = annotationRoom()
   const written = (params ? shape.params : []).map((t, i) => {
     const type = paramTypes[i]
-    const annotations: Annotation[] = []
-    for (const list of paramAnnotations) {
-      // javac counts the declared parameters; other compilers count every descriptor parameter.
-      const k = list.length === shape.params.length ? i : list.length === declared ? at[i] : list.length - shape.params.length + i
-      for (const a of list[k] ?? []) annotations.push(a)
-    }
+    // javac counts the declared parameters; other compilers count every descriptor parameter.
+    const own = paramAnnotations.map((list) => list[list.length === shape.params.length ? i : list.length === declared ? at[i] : list.length - shape.params.length + i])
     const pname = names[at[i]]
     const isFinal = ((mp?.value.parameters[at[i]]?.access ?? 0) & ACC.FINAL) !== 0
-    const before = annotations.length ? [inlineAnnotations(annotations, pool, namer)] : []
-    return [...before, ...(isFinal ? ['final'] : []), type, pname !== undefined ? displayName(pname) : `arg${i}`].join(' ')
+    const annotations = annotationsWithin(own, pool, namer, room)
+    return [...(annotations ? [annotations] : []), ...(isFinal ? ['final'] : []), type, pname !== undefined ? displayName(pname) : `arg${i}`].join(' ')
   })
   // An Exceptions attribute may name 65,535 classes.
   let throws = listWithin(shape.throws, (t) => namer.type(t))
