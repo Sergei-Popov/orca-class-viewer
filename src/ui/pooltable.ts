@@ -2,11 +2,10 @@
 // value, and how often the class uses it. Selecting an entry lists what refers to it: other
 // entries, instructions in the bytecode and parts of the class such as its name or attributes.
 
-import type { AttributeInfo } from '../classfile/attributes'
 import type { ClassFile } from '../classfile/classfile'
 import { displayName } from '../classfile/names'
 import { TAG_NAMES } from '../classfile/pool'
-import { disassemble } from '../bytecode/disasm'
+import { type Usage, type UseSite, poolUsage } from '../classfile/usage'
 import { clamp, h, svg } from './dom'
 import { icon } from './icons'
 import { type Env, fill } from './env'
@@ -19,103 +18,13 @@ export type PoolActions = {
   showCode: (method: number, offset: number) => void
 }
 
-type CodeUse = { method: number; offset: number }
-
-type Usage = { referredBy: number[]; code: CodeUse[]; classUses: string[] }
-
-/** Who uses each pool entry: other entries, instructions, and the class's own structure. */
-export function poolUsage(cls: ClassFile): Usage[] {
-  const pool = cls.pool
-  const usage: Usage[] = Array.from({ length: pool.entries.length }, () => ({ referredBy: [], code: [], classUses: [] }))
-  const add = (index: number, what: string) => {
-    if (index > 0 && index < usage.length) usage[index].classUses.push(what)
-  }
-  for (let i = 1; i < pool.entries.length; i++) for (const r of pool.refs(i)) if (r > 0 && r < usage.length) usage[r].referredBy.push(i)
-  add(cls.thisIndex, 'this_class')
-  add(cls.superIndex, 'super_class')
-  for (const i of cls.interfaceIndices) add(i, 'interfaces')
-  const attributes = (list: AttributeInfo[], where: string) => {
-    for (const a of list) {
-      add(a.nameIndex, `${where} attribute name`)
-      const v = a.value
-      switch (v.kind) {
-        case 'Signature':
-        case 'SourceFile':
-        case 'ConstantValue':
-        case 'NestHost':
-        case 'ModuleMainClass':
-          add(v.index, `${where} ${v.kind}`)
-          break
-        case 'Exceptions':
-        case 'NestMembers':
-        case 'PermittedSubclasses':
-        case 'ModulePackages':
-          for (const i of v.indices) add(i, `${where} ${v.kind}`)
-          break
-        case 'InnerClasses':
-          for (const c of v.classes) {
-            add(c.inner, 'InnerClasses')
-            add(c.outer, 'InnerClasses')
-            add(c.nameIndex, 'InnerClasses')
-          }
-          break
-        case 'EnclosingMethod':
-          add(v.classIndex, 'EnclosingMethod')
-          add(v.methodIndex, 'EnclosingMethod')
-          break
-        case 'BootstrapMethods':
-          v.methods.forEach((m, k) => {
-            add(m.ref, `BootstrapMethods[${k}]`)
-            for (const arg of m.args) add(arg, `BootstrapMethods[${k}] argument`)
-          })
-          break
-        case 'Annotations':
-          for (const ann of v.annotations) add(ann.typeIndex, `${where} ${a.name}`)
-          break
-        case 'Code':
-          attributes(v.code.attributes, `${where} Code`)
-          for (const e of v.code.exceptions) add(e.catchType, `${where} exception table`)
-          break
-        case 'LocalVariableTable':
-        case 'LocalVariableTypeTable':
-          for (const x of v.variables) {
-            add(x.nameIndex, `${where} ${v.kind}`)
-            add(x.descriptorIndex, `${where} ${v.kind}`)
-          }
-          break
-        case 'MethodParameters':
-          for (const p of v.parameters) add(p.nameIndex, `${where} MethodParameters`)
-          break
-        case 'Record':
-          for (const c of v.components) {
-            add(c.nameIndex, 'Record component')
-            add(c.descriptorIndex, 'Record component')
-            attributes(c.attributes, 'Record component')
-          }
-          break
-      }
-    }
-  }
-  cls.fields.forEach((f) => {
-    const where = `field ${displayName(f.name)}`
-    add(f.nameIndex, `${where} name`)
-    add(f.descriptorIndex, `${where} descriptor`)
-    attributes(f.attributes, where)
-  })
-  cls.methods.forEach((m, k) => {
-    const where = `method ${displayName(m.name)}`
-    add(m.nameIndex, `${where} name`)
-    add(m.descriptorIndex, `${where} descriptor`)
-    attributes(m.attributes, where)
-    const code = m.attributes.find((a) => a.value.kind === 'Code')
-    if (code?.value.kind === 'Code') {
-      for (const ins of disassemble(code.value.code.code)) {
-        for (const op of ins.operands) if (op.kind === 'cp' && op.index < usage.length && op.index > 0) usage[op.index].code.push({ method: k, offset: ins.offset })
-      }
-    }
-  })
-  attributes(cls.attributes, 'class')
-  return usage
+/** A use site in the reader's language: "method add · Code · exception table". */
+export function useSiteText(t: Env['t'], site: UseSite): string {
+  const name = displayName(site.name ?? '')
+  const owner =
+    site.owner === 'class' ? t.useClass : fill(site.owner === 'field' ? t.useField : site.owner === 'method' ? t.useMethod : t.useComponent, { name })
+  const parts = { name: t.useName, descriptor: t.useDescriptor, attributeName: t.useAttributeName, exceptionTable: t.useExceptionTable, argument: t.useArgument }
+  return [owner, ...site.path.map((step) => (typeof step === 'string' ? step : parts[step.part]))].join(' · ')
 }
 
 type Row = { index: number; tag: string; refs: number[]; value: string; uses: number; state: 'entry' | 'slot' | 'missing' }
@@ -149,7 +58,7 @@ export class PoolTable {
       const e = pool.get(i)
       if (e) {
         const u = this.usage[i]
-        this.all.push({ index: i, tag: TAG_NAMES[e.tag], refs: pool.refs(i), value: displayValue(pool.text(i), e.tag), uses: u.referredBy.length + u.code.length + u.classUses.length, state: 'entry' })
+        this.all.push({ index: i, tag: TAG_NAMES[e.tag], refs: pool.refs(i), value: displayValue(pool.text(i), e.tag), uses: u.referredBy.length + u.code.length + u.sites.length, state: 'entry' })
       } else {
         const prev = pool.get(i - 1)
         const slot = prev?.tag === 5 || prev?.tag === 6
@@ -398,8 +307,8 @@ export class PoolTable {
       t.poolUsedInCode,
       u.code.map((c) => h('button', { className: 'cv-chip', 'data-method': c.method, 'data-offset': c.offset, title: fill(t.goToOffset, { n: c.offset }) }, `${displayName(this.cls.methods[c.method]?.name ?? '?')} @${c.offset}`))
     )
-    list(t.poolUsedByClass, [...new Set(u.classUses)].map((w) => h('span', { className: 'cv-hint' }, w)))
-    if (!u.referredBy.length && !u.code.length && !u.classUses.length) this.detail.append(h('p', { className: 'cv-hint' }, t.poolNotUsed))
+    list(t.poolUsedByClass, [...new Set(u.sites.map((s) => useSiteText(t, s)))].map((w) => h('span', { className: 'cv-hint' }, w)))
+    if (!u.referredBy.length && !u.code.length && !u.sites.length) this.detail.append(h('p', { className: 'cv-hint' }, t.poolNotUsed))
   }
 }
 
