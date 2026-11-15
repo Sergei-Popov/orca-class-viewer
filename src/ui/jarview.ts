@@ -4,18 +4,19 @@
 // Archives inside open in place, with a breadcrumb back.
 
 import type { ClassFile } from '../classfile/classfile'
-import { parseClass, peekVersion } from '../classfile/classfile'
+import { peekVersion } from '../classfile/classfile'
 import { binaryName, displayName } from '../classfile/names'
 import { javaRelease } from '../classfile/versions'
-import { type ClassRef, type JarKind, type JarModel, type JarNode, buildJar, findClass, jarKind, walk } from '../jar/jar'
+import { ClassCache } from '../jar/cache'
+import { type ClassRef, type JarKind, type JarModel, type JarNode, UNUSUAL_ID, buildJar, findClass, jarKind, walk } from '../jar/jar'
 import { KEY_ATTRIBUTES } from '../jar/manifest'
 import { type ZipEntry, ZipError, openZip } from '../zip/zip'
 import { ClassView } from './classview'
-import { CodeView, type ViewLine, plainLine } from './codeview'
+import { CodeView } from './codeview'
 import { clamp, copyText, h, highlight, storageGet, storageSet, svg } from './dom'
 import { type Env, fill, hexDump, saveFile, sizeText } from './env'
 import { type IconName, icon } from './icons'
-import { tokenizeJava } from './java'
+import { TEXT_TYPES, decodeText, textLines } from './textpreview'
 
 const ROW = 24
 const OVERSCAN = 10
@@ -38,9 +39,6 @@ const IMAGE_TYPES: Record<string, string> = {
   ico: 'image/x-icon',
   svg: 'image/svg+xml'
 }
-const TEXT_TYPES = new Set(
-  'mf sf txt md properties xml json yml yaml html htm css js mjs ts kt kts java scala groovy gradle sql csv tsv conf cfg ini toml list factories imports idx policy jsp tld xsd dtd wsdl xsl xslt pom license notice'.split(' ')
-)
 
 const ext = (path: string) => {
   const leaf = path.slice(path.lastIndexOf('/') + 1)
@@ -59,7 +57,8 @@ type Level = {
   byId: Map<string, JarNode>
   versions?: Map<number, number>
   scanned: number
-  parsed: Map<string, ClassFile | null>
+  /** Classes read to resolve names, within a byte budget. */
+  cache: ClassCache
   /** The release a multi-release class is shown for, by class name. */
   release: Map<string, number>
 }
@@ -124,14 +123,15 @@ export class JarView {
       this.renderRows()
       this.crumbs.replaceChildren(h('span', { className: 'cv-crumb', 'aria-current': 'true' }, this.env.t[kind]))
       this.summary.textContent = sizeText(this.env, bytes.length)
+      const t = this.env.t
+      this.root.classList.add('cv-alone')
       if (error instanceof ZipError && error.code === 'not-zip') {
-        const t = this.env.t
         const head = Array.from(bytes.subarray(0, 4), (b) => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
         const extra = head === 'CA FE BA BE' ? [t.notZipClass] : []
-        this.root.classList.add('cv-alone')
         this.showMessage(t.notZipTitle, fill(t.notZipText, { bytes: head || '—' }), hexDump(bytes, Math.min(256, bytes.length)), extra)
       } else {
-        throw error
+        console.warn('[class-viewer] cannot lay out the archive', error)
+        this.showMessage(t.archiveErrorTitle, fill(t.archiveErrorText, { reason: this.reason(error) }))
       }
       return
     }
@@ -163,19 +163,16 @@ export class JarView {
   private newLevel(model: JarModel, label: string): Level {
     const parents = new Map<string, JarNode | null>()
     const byId = new Map<string, JarNode>()
-    const visit = (nodes: JarNode[], parent: JarNode | null) => {
-      for (const n of nodes) {
-        parents.set(n.id, parent)
-        byId.set(n.id, n)
-        visit(n.children, n)
-      }
+    for (const n of model.tree) parents.set(n.id, null)
+    for (const n of walk(model.tree)) {
+      byId.set(n.id, n)
+      for (const c of n.children) parents.set(c.id, n)
     }
-    visit(model.tree, null)
     const open = new Set<string>()
     for (const n of model.tree) if (n.kind === 'root') open.add(n.id)
     const packages = model.tree.filter((n) => n.kind === 'package' || n.kind === 'root')
     if (packages.length === 1) open.add(packages[0].id)
-    return { model, label, open, selected: null, scrollTop: 0, filter: '', parents, byId, scanned: 0, parsed: new Map(), release: new Map() }
+    return { model, label, open, selected: null, scrollTop: 0, filter: '', parents, byId, scanned: 0, cache: new ClassCache(model.zip), release: new Map() }
   }
 
   private renderLevel(focus: boolean): void {
@@ -187,7 +184,8 @@ export class JarView {
     this.levels.forEach((l, i) => {
       if (i) this.crumbs.append(h('span', { className: 'cv-crumb-sep', 'aria-hidden': 'true' }, svg(icon('chevron'))))
       const current = i === this.levels.length - 1
-      const crumb = h('button', { className: 'cv-crumb', type: 'button', 'aria-current': current ? 'true' : 'false', title: l.label }, l.label)
+      const label = displayName(l.label)
+      const crumb = h('button', { className: 'cv-crumb', type: 'button', 'aria-current': current ? 'true' : 'false', title: label }, label)
       if (!current) crumb.addEventListener('click', () => this.goTo(i))
       this.crumbs.append(crumb)
     })
@@ -196,8 +194,14 @@ export class JarView {
     this.summary.textContent = [t.classes(m.classCount), t.packages(packages), t.resources(m.resourceCount), m.nested.length ? t.archives(m.nested.length) : '', sizeText(this.env, m.zip.size)]
       .filter(Boolean)
       .join(' · ')
-    this.notice.hidden = !m.zip.damaged
-    if (m.zip.damaged) this.notice.replaceChildren(svg(icon('warning')), h('span', {}, t.zipDamaged))
+    const notices: string[] = []
+    if (m.zip.damaged) notices.push(t.zipDamaged)
+    if (m.unusual.length || m.shadowed.length) {
+      const list = [m.unusual.length ? t.unusualNames(m.unusual.length) : '', m.shadowed.length ? t.shadowedCopies(m.shadowed.length) : ''].filter(Boolean).join(` ${t.and} `)
+      notices.push(fill(t.unusualNotice, { list }))
+    }
+    this.notice.hidden = notices.length === 0
+    this.notice.replaceChildren(...(notices.length ? [svg(icon('warning')), h('span', {}, notices.join(' '))] : []))
     this.refreshRows()
     this.scroll.scrollTop = level.scrollTop
     this.renderDetail()
@@ -216,34 +220,30 @@ export class JarView {
     const level = this.level
     if (!level) return
     const q = level.filter.trim().toLowerCase()
-    const rows: Row[] = []
-    if (!q) {
-      const add = (nodes: JarNode[], depth: number, nested: number) => {
-        for (const n of nodes) {
-          rows.push({ node: n, depth, nested })
-          if (n.children.length && level.open.has(n.id)) add(n.children, depth + 1, n.kind === 'class' ? nested + 1 : nested)
-        }
-      }
-      add(level.model.tree, 0, 0)
-    } else {
-      // Matches and the folders above them, all open.
-      const keep = (n: JarNode): boolean => {
-        const self = n.label.toLowerCase().includes(q) || (n.className !== undefined && binaryName(n.className).toLowerCase().includes(q))
-        let child = false
-        for (const c of n.children) if (keep(c)) child = true
-        if (self || child) marked.add(n.id)
-        return self || child
-      }
+    // Without a filter, the open nodes; with one, the matches and the nodes above them, all open.
+    let shown: (n: JarNode) => boolean = () => true
+    let expanded = (n: JarNode) => level.open.has(n.id)
+    if (q) {
       const marked = new Set<string>()
-      for (const n of level.model.tree) keep(n)
-      const add = (nodes: JarNode[], depth: number, nested: number) => {
-        for (const n of nodes) {
-          if (!marked.has(n.id)) continue
-          rows.push({ node: n, depth, nested })
-          add(n.children, depth + 1, n.kind === 'class' ? nested + 1 : nested)
-        }
+      const order = [...walk(level.model.tree)]
+      for (let i = order.length - 1; i >= 0; i--) {
+        const n = order[i]
+        const self = n.label.toLowerCase().includes(q) || (n.className !== undefined && binaryName(n.className).toLowerCase().includes(q))
+        if (self || n.children.some((c) => marked.has(c.id))) marked.add(n.id)
       }
-      add(level.model.tree, 0, 0)
+      shown = (n) => marked.has(n.id)
+      expanded = () => true
+    }
+    const rows: Row[] = []
+    const stack: Row[] = []
+    const push = (nodes: JarNode[], depth: number, nested: number) => {
+      for (let i = nodes.length - 1; i >= 0; i--) if (shown(nodes[i])) stack.push({ node: nodes[i], depth, nested })
+    }
+    push(level.model.tree, 0, 0)
+    for (let row = stack.pop(); row; row = stack.pop()) {
+      rows.push(row)
+      const n = row.node
+      if (n.children.length && expanded(n)) push(n.children, row.depth + 1, n.kind === 'class' ? row.nested + 1 : row.nested)
     }
     this.rows = rows
     this.renderRows()
@@ -324,15 +324,24 @@ export class JarView {
     if (node.children.length) twisty.append(svg(icon('chevron')))
     const [name, cls] = this.kindIcon(node, nested)
     row.append(twisty, h('span', { className: `cv-kind ${cls}` }, svg(icon(name))))
-    const label = h('span', { className: 'cv-label', title: node.path })
-    label.append(highlight(displayName(node.label), level.filter))
+    const label = h('span', { className: 'cv-label', title: displayName(node.path) })
+    label.append(highlight(this.nodeLabel(node), level.filter))
     row.append(label)
+    if (node.issue && node.id !== UNUSUAL_ID) {
+      const note = node.issue === 'shadowed' ? t.entryShadowed : t.entryUnusual
+      row.append(h('span', { className: 'cv-note t-bad', title: note }, note))
+    }
     if (node.versions?.length) {
       row.append(h('span', { className: 'cv-mr', title: t.versionsLabel }, node.versions.map((v) => v.release).join(', ')))
     }
     if ((node.kind === 'package' || node.kind === 'root') && node.classCount) row.append(h('span', { className: 'cv-note' }, node.classCount.toLocaleString(this.env.locale)))
     else if ((node.kind === 'file' || node.kind === 'archive') && node.entry) row.append(h('span', { className: 'cv-note' }, sizeText(this.env, node.entry.size)))
     return row
+  }
+
+  /** The name a node shows, with hidden characters escaped. */
+  private nodeLabel(node: JarNode): string {
+    return node.id === UNUSUAL_ID ? this.env.t.unusualFolder : displayName(node.label)
   }
 
   private rowAt(event: Event): Row | undefined {
@@ -566,7 +575,8 @@ export class JarView {
       this.detail.append(this.entryError(error, entry))
       return
     }
-    const extra = h('div', { className: 'cv-subbar' }, h('span', { className: 'cv-path', title: entry.path }, entry.path))
+    const stored = displayName(entry.name)
+    const extra = h('div', { className: 'cv-subbar' }, h('span', { className: 'cv-path', title: stored }, stored))
     if (node.versions?.length) {
       const seg = h('div', { className: 'cv-seg', role: 'group', 'aria-label': t.versionsLabel })
       const choices = [{ label: t.baseVersion, release: undefined as number | undefined }, ...node.versions.map((v) => ({ label: fill(t.releaseVersion, { n: v.release }), release: v.release as number | undefined }))]
@@ -598,26 +608,15 @@ export class JarView {
     })
   }
 
+  /** A class read only to resolve names: small ones only, and within the level's byte budget. */
   private parsed(level: Level, name: string, from?: ClassRef): ClassFile | undefined {
-    if (level.parsed.has(name)) return level.parsed.get(name) ?? undefined
-    const ref = findClass(level.model, name, from)
-    let cls: ClassFile | null = null
-    if (ref) {
-      try {
-        cls = parseClass(level.model.zip.read(ref.entry, CLASS_LIMIT).bytes)
-      } catch {
-        cls = null
-      }
-    }
-    if (level.parsed.size > 2000) level.parsed.clear()
-    level.parsed.set(name, cls)
-    return cls ?? undefined
+    return level.cache.get(name, findClass(level.model, name, from)?.entry)
   }
 
   private head(node: JarNode, entry: ZipEntry | undefined, actions: HTMLElement[]): HTMLElement {
     const t = this.env.t
     const [name, cls] = this.kindIcon(node, 0)
-    const bar = h('div', { className: 'cv-bar' }, h('div', { className: 'cv-title' }, h('span', { className: `cv-kind ${cls}` }, svg(icon(name))), h('h1', { title: node.path }, displayName(node.label))))
+    const bar = h('div', { className: 'cv-bar' }, h('div', { className: 'cv-title' }, h('span', { className: `cv-kind ${cls}` }, svg(icon(name))), h('h1', { title: displayName(node.path) }, this.nodeLabel(node))))
     if (entry) {
       const method = entry.method === 0 ? t.stored : entry.method === 8 ? t.deflated : String(entry.method)
       const parts = [sizeText(this.env, entry.size), `${t.packed} ${sizeText(this.env, entry.packed)}`, method]
@@ -672,14 +671,17 @@ export class JarView {
       this.detail.append(this.head(node, entry, actions), h('div', { className: 'cv-image' }, h('img', { src: this.blobUrl, alt: node.label })))
       return
     }
-    const text = truncated ? undefined : decodeText(bytes, e)
+    // A text entry over the limit shows its start; anything else over it gets the hex dump.
+    const text = !truncated || TEXT_TYPES.has(e) ? decodeText(bytes, e, truncated) : undefined
     if (text !== undefined) {
       const view = new CodeView({ label: node.label })
       view.setLines(textLines(text, e))
       copyButton.addEventListener('click', async () => this.env.toast((await copyText(text)) ? t.copied : t.copyFailed))
       actions.push(copyButton)
       if (save) actions.push(save)
-      this.detail.append(this.head(node, entry, actions), view.root)
+      this.detail.append(this.head(node, entry, actions))
+      if (truncated) this.detail.append(h('p', { className: 'cv-hint cv-texthead' }, fill(t.textHead, { shown: sizeText(this.env, bytes.length), size: sizeText(this.env, entry.size) })))
+      this.detail.append(view.root)
       return
     }
     if (save) actions.push(save)
@@ -748,13 +750,18 @@ export class JarView {
     else if (error instanceof ZipError && error.code === 'method') text = fill(t.entryMethod, { method: String(entry.method) })
     else if (error instanceof ZipError && error.code === 'too-large') text = fill(t.previewTooBig, { size: sizeText(this.env, entry.size) })
     else text = fill(t.entryDamaged, { reason: this.reason(error) })
-    return h('div', { className: 'cv-center' }, svg(icon('warning')), h('p', { title: error instanceof Error ? error.message : undefined }, text), h('p', { className: 'cv-path' }, entry.path))
+    return h('div', { className: 'cv-center' }, svg(icon('warning')), h('p', { title: error instanceof Error ? error.message : undefined }, text), h('p', { className: 'cv-path' }, displayName(entry.name)))
   }
 
   private folderView(node: JarNode, level: Level): HTMLElement {
     const t = this.env.t
     const [name, cls] = this.kindIcon(node, 0)
-    const label = node.kind === 'package' ? displayName(node.path.replace(/^(WEB-INF|BOOT-INF)\/classes\//, '').replace(/^classes\//, level.model.kind === 'jmod' ? '' : 'classes/').replace(/\//g, '.')) : node.path
+    const label =
+      node.kind === 'package'
+        ? displayName(node.path.replace(/^(WEB-INF|BOOT-INF)\/classes\//, '').replace(/^classes\//, level.model.kind === 'jmod' ? '' : 'classes/').replace(/\//g, '.'))
+        : node.id === UNUSUAL_ID
+          ? t.unusualFolder
+          : displayName(node.path)
     const box = h('div', { className: 'cv-overview' }, h('h2', {}, h('span', { className: `cv-kind ${cls}` }, svg(icon(name))), label))
     const classes = node.classCount
     const files = [...walk(node.children)].filter((n) => n.kind === 'file' || n.kind === 'archive').length
@@ -773,7 +780,7 @@ export class JarView {
     const t = this.env.t
     const m = level.model
     const box = h('div', { className: 'cv-overview' })
-    box.append(h('h2', {}, svg(icon('archive')), level.label), h('p', {}, sizeText(this.env, m.zip.size)))
+    box.append(h('h2', {}, svg(icon('archive')), displayName(level.label)), h('p', {}, sizeText(this.env, m.zip.size)))
     const packages = [...walk(m.tree)].filter((n) => n.kind === 'package').length
     const stats = h('div', { className: 'cv-stats' }, this.stat(m.classCount, t.classes), this.stat(packages, t.packages), this.stat(m.resourceCount, t.resources))
     if (m.nested.length) stats.append(this.stat(m.nested.length, t.archives))
@@ -798,33 +805,36 @@ export class JarView {
     const main = m.manifest?.main
     const classLink = (dotted: string) => {
       const ref = findClass(m, dotted.trim().replace(/\./g, '/'))
-      if (!ref) return h('span', { className: 'cv-mono' }, dotted)
-      const b = h('button', { className: 'cv-a cv-mono', type: 'button', title: fill(t.openClass, { name: dotted }) }, dotted)
+      const text = displayName(dotted)
+      if (!ref) return h('span', { className: 'cv-mono' }, text)
+      const b = h('button', { className: 'cv-a cv-mono', type: 'button', title: fill(t.openClass, { name: text }) }, text)
       b.addEventListener('click', () => this.select(ref.node.id))
       return b
     }
-    const moduleInfo = findClass(m, 'module-info')
+    const moduleInfo = m.moduleInfo
     if (moduleInfo) {
-      const cls = this.parsed(level, 'module-info')
+      const cls = level.cache.get(`#${moduleInfo.entry.index}`, moduleInfo.entry)
       const mod = cls?.attributes.find((a) => a.value.kind === 'Module')
       const name = mod?.value.kind === 'Module' ? cls?.pool.text(mod.value.module.nameIndex) : undefined
-      const b = h('button', { className: 'cv-a cv-mono', type: 'button' }, name ?? 'module-info')
-      b.addEventListener('click', () => this.select(moduleInfo.node.id))
-      info.push([t.moduleName, b])
+      const b = h('button', { className: 'cv-a cv-mono', type: 'button', title: displayName(moduleInfo.entry.name) }, displayName(name ?? 'module-info'))
+      b.addEventListener('click', () => this.select(moduleInfo.nodeId))
+      const value = h('span', {}, b)
+      if (moduleInfo.release !== undefined) value.append(h('span', { className: 'cv-hint' }, `  ${fill(t.releaseVersion, { n: moduleInfo.release })}`))
+      info.push([t.moduleName, value])
     }
     if (main) {
       for (const key of KEY_ATTRIBUTES) {
         const value = main.get(key)
         if (value === undefined || key === 'Multi-Release') continue
         const label = key === 'Main-Class' ? t.mainClass : key === 'Start-Class' ? t.startClass : key === 'Automatic-Module-Name' ? t.automaticModule : key
-        info.push([label, key === 'Main-Class' || key === 'Start-Class' || key.endsWith('Agent-Class') || key === 'Premain-Class' ? classLink(value) : h('span', { className: 'cv-mono' }, value)])
+        info.push([label, key === 'Main-Class' || key === 'Start-Class' || key.endsWith('Agent-Class') || key === 'Premain-Class' ? classLink(value) : h('span', { className: 'cv-mono' }, displayName(value))])
       }
     }
     if (m.multiRelease || m.versions.length) info.push([t.multiRelease, fill(t.multiReleaseValue, { list: m.versions.map((v) => `Java ${v}`).join(', ') || '—' })])
     if (m.manifestEntry) {
       const node = level.byId.get(`f:${m.manifestEntry.path}`)
       if (node) {
-        const b = h('button', { className: 'cv-a cv-mono', type: 'button' }, m.manifestEntry.path)
+        const b = h('button', { className: 'cv-a cv-mono', type: 'button' }, displayName(m.manifestEntry.name))
         b.addEventListener('click', () => this.select(node.id))
         info.push([t.manifest, b])
       }
@@ -838,7 +848,7 @@ export class JarView {
       const list = h('div', { className: 'cv-bars' })
       for (const e of m.nested.slice(0, 40)) {
         const node = level.byId.get(`f:${e.path}`)
-        const b = h('button', { className: 'cv-a cv-mono', type: 'button', style: 'text-align:left' }, e.path)
+        const b = h('button', { className: 'cv-a cv-mono', type: 'button', style: 'text-align:left' }, displayName(e.name))
         if (node) b.addEventListener('click', () => this.select(node.id))
         list.append(h('div', {}, b, h('span', { className: 'cv-hint' }, `  ${sizeText(this.env, e.size)}`)))
       }
@@ -909,34 +919,4 @@ export class JarView {
     b.addEventListener('click', onClick)
     return b
   }
-}
-
-/** The entry as text, or undefined when it looks binary. */
-function decodeText(bytes: Uint8Array, extension: string): string | undefined {
-  const sample = bytes.subarray(0, 65536)
-  for (let i = 0; i < sample.length; i++) if (sample[i] === 0) return undefined
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/^﻿/, '')
-  } catch {
-    if (TEXT_TYPES.has(extension)) return new TextDecoder('windows-1252').decode(bytes)
-    return undefined
-  }
-}
-
-function textLines(text: string, extension: string): ViewLine[] {
-  const lines = text.split(/\r\n|\r|\n/)
-  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
-  if (extension === 'java' || extension === 'kt' || extension === 'groovy' || extension === 'scala') {
-    const state = { comment: false }
-    const cls = { kw: 't-kw', type: 't-type', str: 't-str', num: 't-num', com: 't-com', ann: 't-ann', plain: undefined } as const
-    return lines.map((l) => ({ text: l, spans: tokenizeJava(l, state).map((tok) => ({ text: tok.text, cls: cls[tok.kind] })) }))
-  }
-  if (extension === 'mf' || extension === 'sf' || extension === 'properties') {
-    return lines.map((l) => {
-      if (/^\s*[#!]/.test(l)) return plainLine(l, 't-com')
-      const m = /^([^:=\s][^:=]*?)(\s*[:=]\s?)(.*)$/.exec(l)
-      return m ? { text: l, spans: [{ text: m[1], cls: 't-key' }, { text: m[2] }, { text: m[3], cls: 't-str' }] } : plainLine(l)
-    })
-  }
-  return lines.map((l) => plainLine(l))
 }

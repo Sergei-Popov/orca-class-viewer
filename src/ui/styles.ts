@@ -220,6 +220,7 @@ button, select, input { font: inherit; color: inherit; }
 .cv-detail ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 3px 6px; font: 12px var(--mono-font); }
 .cv-detail li { white-space: nowrap; }
 .cv-hint { color: var(--muted-fg); }
+.cv-texthead { margin: 0; padding: 5px 12px; border-bottom: 1px solid var(--border); font-size: 12px; flex: none; }
 .cv-chip { border: 1px solid var(--border); background: var(--muted); border-radius: 4px; padding: 0 5px; cursor: pointer; font: inherit; color: inherit; }
 .cv-chip:hover { background: var(--accent); }
 

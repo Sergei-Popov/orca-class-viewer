@@ -187,6 +187,7 @@ const en = {
   path: 'Path',
   binaryHead: 'Binary file: the first {n}',
   previewTooBig: 'Too large to preview here ({size}).',
+  textHead: 'The first {shown} of {size}.',
   entryEncrypted: 'This entry is encrypted, so it cannot be read.',
   entryMethod: 'This entry uses {method}, which jars do not use and this viewer does not read.',
   entryDamaged: 'This entry cannot be unpacked: {reason}.',
@@ -208,6 +209,15 @@ const en = {
   nestedErrorTitle: 'Cannot open this archive',
   nestedNotZip: 'It has an archive’s name but no ZIP directory at its end, so it cannot be opened as an archive.',
   zipDamaged: 'The archive’s directory ends early; it shows the entries that could be read.',
+  unusualFolder: 'Unusual entries',
+  unusualNotice: 'Listed under “Unusual entries” by their stored names: {list}. The JVM finds an entry only by its exact name and takes the last copy of a name; the tree shows what it takes.',
+  unusualNames: enPlural('entry with a name the JVM never looks up', 'entries with names the JVM never looks up'),
+  shadowedCopies: enPlural('earlier copy of a name', 'earlier copies of names'),
+  and: 'and',
+  entryUnusual: 'unusual name',
+  entryShadowed: 'replaced by a later copy',
+  archiveErrorTitle: 'This archive cannot be shown',
+  archiveErrorText: 'Something in it is beyond what the viewer can lay out: {reason}.',
   classInJar: 'Class {name} from {archive}'
 }
 
@@ -385,6 +395,7 @@ const ru: Strings = {
   path: 'Путь',
   binaryHead: 'Двоичный файл: первые {n}',
   previewTooBig: 'Слишком большой для просмотра здесь ({size}).',
+  textHead: 'Первые {shown} из {size}.',
   entryEncrypted: 'Этот файл зашифрован, его нельзя прочитать.',
   entryMethod: 'Этот файл сжат методом {method}, который в jar не используется и просмотрщик не читает.',
   entryDamaged: 'Этот файл не распаковывается: {reason}.',
@@ -406,6 +417,15 @@ const ru: Strings = {
   nestedErrorTitle: 'Не удаётся открыть архив',
   nestedNotZip: 'У него имя архива, но в конце нет каталога ZIP, поэтому открыть его как архив нельзя.',
   zipDamaged: 'Каталог архива обрывается; показаны записи, которые удалось прочитать.',
+  unusualFolder: 'Необычные записи',
+  unusualNotice: 'В папке «Необычные записи» под своими именами: {list}. JVM находит запись только по точному имени и берёт последнюю копию имени; дерево показывает то, что берёт JVM.',
+  unusualNames: ruPlural('запись с именем, которое JVM не ищет', 'записи с именами, которые JVM не ищет', 'записей с именами, которые JVM не ищет'),
+  shadowedCopies: ruPlural('ранняя копия имени', 'ранние копии имён', 'ранних копий имён'),
+  and: 'и',
+  entryUnusual: 'необычное имя',
+  entryShadowed: 'заменена более поздней копией',
+  archiveErrorTitle: 'Этот архив не показать',
+  archiveErrorText: 'В нём есть то, что просмотрщик не может разложить: {reason}.',
   classInJar: 'Класс {name} из {archive}',
 
   comments: {
