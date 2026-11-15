@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stablyai/orca/main/docs/schemas/plugins/orca-plugin.v2.schema.json",
+  "manifestVersion": 2,
+  "id": "class-viewer",
+  "name": "Class File Viewer",
+  "version": "0.1.0",
+  "description": "Compiled JVM .class files in Orca's editor tabs: decompiled source, bytecode and the constant pool, plus .jar files browsed class by class. Offline, no JDK needed.",
+  "engines": {
+    "orca": ">=1.4.248"
+  },
+  "execution": "sandboxed-ui",
+  "pluginApi": 1,
+  "contributes": {
+    "customEditors": [
+      {
+        "id": "class-viewer",
+        "title": "Class File Viewer",
+        "extensions": [
+          ".class-viewer"
+        ],
+        "entry": "editor/main.ts",
+        "frame": "isolated"
+      }
+    ]
+  },
+  "author": {
+    "name": "Сергей Попов",
+    "url": "https://github.com/Sergei-Popov"
+  },
+  "repository": "https://github.com/Sergei-Popov/orca-class-viewer",
+  "license": "MIT"
+}
