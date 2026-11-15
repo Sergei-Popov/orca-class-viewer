@@ -5,7 +5,7 @@
   "id": "class-viewer",
   "name": "Class File Viewer",
   "version": "0.1.0",
-  "description": "Read compiled JVM .class files in Orca's editor tabs: an outline of the declarations in Java syntax, bytecode listed like javap, the class file's structure and a cross-linked constant pool. .jar, .war, .ear, .aar and .jmod files open as a tree of packages and classes. Offline, no JDK needed. Independent; not affiliated with Oracle.",
+  "description": "Read compiled .class files in Orca's editor tabs: declarations in Java syntax, bytecode listed like javap, the file's structure and a linked constant pool. Jars, wars, ears, aars and jmods open as a tree of packages and classes. Offline, no JDK needed. Independent; not affiliated with Oracle.",
   "author": {
     "name": "Sergei Popov",
     "url": "https://github.com/Sergei-Popov"
@@ -15,32 +15,24 @@
   "icon": "images/icon.png",
   "cover": {
     "path": "images/cover.png",
-    "alt": "A jar with Orca's dark theme: the package tree with nested classes, and the selected class's declarations in Java syntax in the Outline tab."
+    "alt": "Read any class in a jar as Java declarations: Telescope’s Outline, compiled for Java 21, beside a tree of 12 classes in 3 packages."
   },
   "screenshots": [
     {
       "path": "images/bytecode-light.png",
-      "alt": "The Bytecode tab with Orca's light theme: methods listed like javap -c -v, with instructions, constant pool references, line numbers and locals.",
-      "caption": "Bytecode listed like javap, with links to the constant pool and jump targets.",
-      "theme": "light"
+      "alt": "See what the compiler wrote, listed like javap -c -v: Catalog’s constructor, stack=3, locals=1, with links to pool entries #1, #7, #9."
     },
     {
       "path": "images/constant-pool-dark.png",
-      "alt": "The Constant pool tab with Orca's dark theme: a selected Fieldref, the entries it refers to and the methods that use it.",
-      "caption": "A filterable constant pool that shows what refers to each entry.",
-      "theme": "dark"
+      "alt": "Find what uses each constant: #10 Fieldref Catalog.bodies, used 5 times, by <init>, add, map, nearest and iterator; 157 entries."
     },
     {
       "path": "images/multi-release-light.png",
-      "alt": "A multi-release class in a jar with Orca's light theme: the Java 8 badge in the header and a switch between the base class and its Java 11 version.",
-      "caption": "The Java version of every class, and each version of a multi-release class.",
-      "theme": "light"
+      "alt": "See each class’s Java version and its multi-release copies: Units, compiled for Java 8, with a switch to its Java 11+ version."
     },
     {
       "path": "images/jar-overview-light.png",
-      "alt": "A jar's overview with Orca's light theme: class and package counts, a chart of the Java versions, the module, main class and manifest.",
-      "caption": "A jar at a glance: Java versions, module, main class and manifest.",
-      "theme": "light"
+      "alt": "A jar at a glance: Java 21 for 6 classes, 17 for 5, 8 for 1, module demo.observatory and main class demo.observatory.Main."
     }
   ],
   "engines": {
