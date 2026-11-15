@@ -198,20 +198,27 @@ test('reads the manifest that java.util.jar reads', () => {
 
 // Review 2, finding 14. What JarFile.getManifest() of Java 21.0.13 read from jars of these names,
 // each entry with Main-Class m<index> (checked on the PC with eclipse-temurin:21-jdk): the last
-// name that matches in ASCII capitals, the exact one included; ſ and ı are not ASCII.
+// name that matches in ASCII capitals, the exact one included; ſ and ı are not ASCII. `java -jar`
+// starts a jar only when some entry has the exact name, and then runs JarFile's choice: with
+// MANIFEST.MF (A) then manifest.mf (B) it ran B; with manifest.mf alone, or Manifest.MF and
+// MANIFEST.mf, it said "Invalid or corrupt jarfile".
 test('matches the manifest name in ASCII capitals only and takes the last match, as Java 21', () => {
-  const cases: [string[], string | undefined][] = [
-    [['META-INF/MANIFEST.MF', 'META-INF/manifest.mf'], 'm1'],
-    [['META-INF/manifest.mf', 'META-INF/MANIFEST.MF'], 'm1'],
-    [['META-INF/Manifest.MF', 'META-INF/MANIFEST.mf'], 'm1'],
-    [['meta-inf/manifest.mf'], 'm0'],
-    [['META-INF/MANIFEST.MF', 'META-INF/MANIFEſT.MF'], 'm0'],
-    [['META-ıNF/MANIFEST.MF'], undefined],
-    [['META-ıNF/MANIFEST.MF', 'META-INF/manifest.mf'], 'm1']
+  const cases: [string[], string | undefined, boolean][] = [
+    [['META-INF/MANIFEST.MF', 'META-INF/manifest.mf'], 'm1', true],
+    [['META-INF/manifest.mf', 'META-INF/MANIFEST.MF'], 'm1', true],
+    [['META-INF/Manifest.MF', 'META-INF/MANIFEST.mf'], 'm1', false],
+    [['META-INF/manifest.mf'], 'm0', false],
+    [['meta-inf/manifest.mf'], 'm0', false],
+    [['META-INF/MANIFEST.MF'], 'm0', true],
+    [['META-INF/MANIFEST.MF', 'META-INF/MANIFEſT.MF'], 'm0', true],
+    [['META-ıNF/MANIFEST.MF'], undefined, false],
+    [['META-ıNF/MANIFEST.MF', 'META-INF/manifest.mf'], 'm1', false]
   ]
-  for (const [names, expected] of cases) {
+  for (const [names, expected, exact] of cases) {
     const items = names.map((name, i) => ({ name, data: `Manifest-Version: 1.0\r\nMain-Class: m${i}\r\n\r\n` }))
-    assert.equal(buildJar(openZip(zip(items))).manifest?.main.get('Main-Class'), expected, names.join(' + '))
+    const model = buildJar(openZip(zip(items)))
+    assert.equal(model.manifest?.main.get('Main-Class'), expected, names.join(' + '))
+    assert.equal(model.manifestExact, exact, `exact: ${names.join(' + ')}`)
   }
 })
 

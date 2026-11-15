@@ -8,7 +8,7 @@ import { peekVersion } from '../classfile/classfile'
 import { binaryName, displayName } from '../classfile/names'
 import { javaRelease } from '../classfile/versions'
 import { ClassCache, type ReadBudget, readBudget } from '../jar/cache'
-import { type ClassRef, type JarKind, type JarModel, type JarNode, MANIFEST, UNUSUAL_ID, buildJar, findClass, jarKind, walk } from '../jar/jar'
+import { type ClassRef, type JarKind, type JarModel, type JarNode, UNUSUAL_ID, buildJar, findClass, jarKind, walk } from '../jar/jar'
 import { KEY_ATTRIBUTES } from '../jar/manifest'
 import { type ZipEntry, ZipError, openZip } from '../zip/zip'
 import { ClassView } from './classview'
@@ -847,7 +847,7 @@ export class JarView {
         const b = h('button', { className: 'cv-a cv-mono', type: 'button' }, displayName(m.manifestEntry.name))
         b.addEventListener('click', () => this.select(node.id))
         // java.util.jar reads a manifest named in other capitals, but `java -jar` wants the exact name.
-        info.push([t.manifest, m.manifestEntry.name === MANIFEST ? b : h('span', {}, b, h('span', { className: 'cv-hint' }, `  ${t.manifestNotExact}`))])
+        info.push([t.manifest, m.manifestExact ? b : h('span', {}, b, h('span', { className: 'cv-hint' }, `  ${t.manifestNotExact}`))])
       }
     }
     if (info.length) {

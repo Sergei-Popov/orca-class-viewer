@@ -59,6 +59,12 @@ export type JarModel = {
   resourceCount: number
   manifest?: Manifest
   manifestEntry?: ZipEntry
+  /**
+   * Some entry is named exactly META-INF/MANIFEST.MF. `java -jar` (Java 21) refuses a jar without
+   * one ("Invalid or corrupt jarfile"); with one, it runs the Main-Class of `manifestEntry`, which
+   * may be a later copy in other capitals.
+   */
+  manifestExact: boolean
   /** Releases with a META-INF/versions/N folder. */
   versions: number[]
   multiRelease: boolean
@@ -366,7 +372,12 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
   // As java.util.jar.JarFile in Java 21: the last entry whose name is META-INF/MANIFEST.MF in any
   // case of its ASCII letters (ZipFile.Source.isMetaName and isManifestName), the exact name included.
   let manifestEntry: ZipEntry | undefined
-  for (const e of zip.entries) if (isManifestName(e.name)) manifestEntry = e
+  let manifestExact = false
+  for (const e of zip.entries) {
+    if (!isManifestName(e.name)) continue
+    manifestEntry = e
+    if (e.name === MANIFEST) manifestExact = true
+  }
   if (manifestEntry && manifestEntry.size < 4 * 1024 * 1024) {
     try {
       manifest = parseManifest(new TextDecoder().decode(zip.read(manifestEntry).bytes))
@@ -409,6 +420,7 @@ export function buildJar(zip: Zip, kind: JarKind = 'jar'): JarModel {
     resourceCount,
     manifest,
     manifestEntry,
+    manifestExact,
     versions: [...versionSet].sort((a, b) => a - b),
     multiRelease,
     nested,
