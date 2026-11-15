@@ -2,6 +2,7 @@ import { assert, test } from 'orca/testing'
 import { ClassWriter, asm, s4, u2 } from '../testing/classwriter'
 import { MAX_CODE_LENGTH } from '../classfile/attributes'
 import { damagedAttributes, parseClass } from '../classfile/classfile'
+import { annotationDefault, makeNamer } from '../classfile/declarations'
 import { poolUsage } from '../classfile/usage'
 import { stringsFor } from '../i18n'
 import { useSiteText } from '../ui/pooltable'
@@ -340,6 +341,98 @@ test('looks local variable names up in an index of the LocalVariableTable', () =
   assert.equal(pick(1, 12), 'b')
   assert.equal(pick(1, 35), 'a')
   assert.equal(localNames(pool, undefined)(1, 0), undefined)
+})
+
+// Review 2, round 2, minor 3: past 16 overlapping ranges the lookup gave a later range, not the table's first.
+test('names a local by the table’s first range that holds the instruction, however many overlap', () => {
+  const w = new ClassWriter({ name: 'demo/Overlap' })
+  const first = w.pool.utf8('first')
+  const names = Array.from({ length: 20 }, (_, i) => w.pool.utf8(`v${i}`))
+  const pool = parseClass(w.toBytes()).pool
+  // `first` holds 0 to 100; v0 to v19 start at 1 to 20 and hold 100 bytes each.
+  const vars = [{ start: 0, length: 100, slot: 1, nameIndex: first }, ...names.map((nameIndex, i) => ({ start: 1 + i, length: 100, slot: 1, nameIndex }))]
+  const at = localNames(pool, vars)
+  assert.equal(at(1, 50), 'first')
+  assert.equal(at(1, 99), 'first')
+  assert.equal(at(1, 100), 'v0')
+  assert.equal(at(1, 119), 'v19')
+  assert.equal(at(1, 120), undefined)
+  // A step back starts over.
+  assert.equal(at(1, 30), 'first')
+  // 65,535 ranges of one slot over the whole code: one sweep, not a scan per instruction.
+  const many = Array.from({ length: 65535 }, (_, i) => ({ start: 0, length: 65535, slot: 5, nameIndex: i ? names[i % 20] : first }))
+  const lookup = localNames(pool, many)
+  const started = Date.now()
+  let found = 0
+  for (let pc = 0; pc < 65535; pc += 2) if (lookup(5, pc) === 'first') found++
+  assert.equal(found, 32768)
+  assert.ok(Date.now() - started < 1000, `${Date.now() - started} ms`)
+})
+
+// Review 2, round 2, minor 7: args_size counted slots, where javap counts parameters, and `this`.
+test('counts args_size as javap does: one per parameter, and this', () => {
+  const w = new ClassWriter({ name: 'demo/Args' })
+  w.method({ access: 9, name: 's', descriptor: '(JD)V', attributes: [w.code({ code: asm('return') })] })
+  w.method({ access: 1, name: 'i', descriptor: '(JD)V', attributes: [w.code({ code: asm('return') })] })
+  w.method({ access: 1, name: 'a', descriptor: '([[JLjava/lang/String;I)V', attributes: [w.code({ code: asm('return') })] })
+  w.method({ access: 9, name: 'none', descriptor: '()V', attributes: [w.code({ code: asm('return') })] })
+  assert.deepEqual(text(classListing(parseClass(w.toBytes()))).match(/args_size=\d+/g), ['args_size=2', 'args_size=3', 'args_size=4', 'args_size=0'])
+})
+
+// Review 2, round 2, minor 8: `AnnotationDefault:` had no value.
+test('lists an annotation member’s default value as the Outline writes it', () => {
+  const w = new ClassWriter({ name: 'demo/Limit', access: 0x2601, interfaces: ['java/lang/annotation/Annotation'] })
+  const five = w.pool.int(5)
+  const tags = [0x5b, ...u2(2), 0x73, ...u2(w.pool.utf8('a')), 0x73, ...u2(w.pool.utf8('b'))]
+  w.method({ access: 0x401, name: 'max', descriptor: '()I', attributes: [{ name: 'AnnotationDefault', body: [0x49, ...u2(five)] }] })
+  w.method({ access: 0x401, name: 'tags', descriptor: '()[Ljava/lang/String;', attributes: [{ name: 'AnnotationDefault', body: tags }] })
+  const cls = parseClass(w.toBytes())
+  const listing = text(classListing(cls))
+  assert.match(listing, /^ {2}AnnotationDefault: 5$/m)
+  assert.match(listing, /^ {2}AnnotationDefault: \{"a", "b"\}$/m)
+  const namer = makeNamer(cls, true)
+  assert.equal(annotationDefault(cls, cls.methods[1], namer), ' default {"a", "b"}')
+})
+
+// Review 2, round 2, the major: every row of an attribute takes its place in the budget.
+test('lists attribute entries within the row budget and counts what is left out', () => {
+  const w = new ClassWriter({ name: 'demo/Throws' })
+  const exceptions = (n: number) => [...u2(n), ...new Array(n).fill(0).flatMap(() => u2(w.pool.cls('java/io/IOException')))]
+  const params = [30, ...new Array(30).fill(0).flatMap((_, i) => [...u2(w.pool.utf8(`p${i}`)), ...u2(0)])]
+  w.method({ access: 9, name: 'a', descriptor: '()V', attributes: [w.code({ code: asm('return') }), { name: 'MethodParameters', body: params }, { name: 'Exceptions', body: exceptions(1) }] })
+  w.method({ access: 9, name: 'b', descriptor: '()V', attributes: [{ name: 'Exceptions', body: exceptions(2) }] })
+  const cls = parseClass(w.toBytes())
+  // 3 rows of code, the table's name and 16 of its 30 parameters.
+  const lines = classListing(cls, 20)
+  const omitted = lines.filter((l) => l.omitted).map((l) => [l.method, l.omitted?.count, l.omitted?.of])
+  assert.deepEqual(omitted, [
+    [0, 14, 'entries'],
+    [0, 1, 'attributes'],
+    [1, 1, 'attributes']
+  ])
+  assert.equal(lines.filter((l) => l.segs.some((s) => /^ {4}p\d+$/.test(s.text))).length, 16)
+  // Every method keeps its first line.
+  assert.ok(lines.some((l) => l.anchor === 'm1'))
+  // With room, nothing is left out.
+  assert.equal(classListing(cls).filter((l) => l.omitted || l.cut !== undefined).length, 0)
+})
+
+// Review 2, round 2, minor 4: the Constant pool listed uses in code the Bytecode tab had cut.
+test('searches uses in code only where the Bytecode tab lists the code', () => {
+  const w = new ClassWriter({ name: 'demo/Cut' })
+  const field = w.pool.field('demo/Cut', 'x', 'I')
+  const lines: number[] = [...u2(40)]
+  for (let i = 0; i < 40; i++) lines.push(...u2(0), ...u2(i))
+  // 5 rows of code and 41 of its LineNumberTable: past a budget of 30, as its 3 instructions are not.
+  w.method({ access: 9, name: 'm', descriptor: '()V', attributes: [w.code({ code: [...asm('getstatic', ...u2(field)), ...asm('pop', 'return')], attributes: [{ name: 'LineNumberTable', body: lines }] })] })
+  const cls = parseClass(w.toBytes())
+  assert.equal(classListing(cls, 30).filter((l) => l.cut !== undefined).length, 1)
+  const cut = poolUsage(cls, 30)
+  assert.equal(cut.codeCut, true)
+  assert.deepEqual(cut[field].code, [])
+  const whole = poolUsage(cls)
+  assert.equal(whole.codeCut, undefined)
+  assert.deepEqual(whole[field].code, [{ method: 0, offset: 0 }])
 })
 
 // Review 2, finding 10: an unknown attribute may be named with a bidi mark and a newline.

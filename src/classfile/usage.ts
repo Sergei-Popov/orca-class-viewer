@@ -3,7 +3,7 @@
 // translates the parts of a use site and links the instructions.
 
 import { disassemble } from '../bytecode/disasm'
-import { MAX_LISTED_ROWS } from '../bytecode/listing'
+import { MAX_LISTED_ROWS, codeListed } from '../bytecode/listing'
 import type { AttributeInfo } from './attributes'
 import type { ClassFile } from './classfile'
 
@@ -23,21 +23,29 @@ export type UseSite = { owner: 'class' | 'field' | 'method' | 'component'; name?
 
 export type Usage = { referredBy: number[]; code: CodeUse[]; sites: UseSite[] }
 
-/** Every entry's uses, by index; `codeCut` when the methods past the instruction limit were not searched. */
+/** Every entry's uses, by index; `codeCut` when some code was not searched, as the Bytecode tab does not list it. */
 export type PoolUsage = Usage[] & { codeCut?: boolean }
 
+const sameStep = (a: UseStep, b: UseStep) => (typeof a === 'string' ? a === b : typeof b !== 'string' && a.part === b.part)
+
 /**
- * Who uses each entry. The bytecode is searched for its first `limit` instructions or so, as
- * the Bytecode tab lists them: a crafted class of many full methods would make tens of millions
- * of uses.
+ * Who uses each entry. The bytecode is searched in the methods whose code the Bytecode tab lists
+ * within `limit` rows: a crafted class of many full methods would make tens of millions of uses,
+ * and a use the tab does not list could not be shown.
  */
 export function poolUsage(cls: ClassFile, limit = MAX_LISTED_ROWS): PoolUsage {
   const pool = cls.pool
   const usage: PoolUsage = Array.from({ length: pool.entries.length }, () => ({ referredBy: [], code: [], sites: [] }))
-  let left = limit
+  const listed = codeListed(cls, limit)
   const valid = (index: number) => index > 0 && index < usage.length
   const add = (index: number, at: UseSite, ...steps: UseStep[]) => {
-    if (valid(index)) usage[index].sites.push({ ...at, path: [...at.path, ...steps] })
+    if (!valid(index)) return
+    const sites = usage[index].sites
+    const path = [...at.path, ...steps]
+    const last = sites[sites.length - 1]
+    // A site once in a row: 65,535 annotations of one type in one attribute are one use of its name.
+    const repeated = last && last.owner === at.owner && last.name === at.name && last.path.length === path.length && path.every((step, i) => sameStep(step, last.path[i]))
+    if (!repeated) sites.push({ ...at, path })
   }
   const within = (at: UseSite, step: UseStep): UseSite => ({ ...at, path: [...at.path, step] })
 
@@ -127,12 +135,10 @@ export function poolUsage(cls: ClassFile, limit = MAX_LISTED_ROWS): PoolUsage {
     attributes(m.attributes, at)
     const code = m.attributes.find((a) => a.value.kind === 'Code')
     if (code?.value.kind === 'Code') {
-      if (left <= 0) {
+      if (!listed(k)) {
         usage.codeCut = true
       } else {
-        const instructions = disassemble(code.value.code.code)
-        left -= instructions.length
-        for (const ins of instructions) {
+        for (const ins of disassemble(code.value.code.code)) {
           for (const op of ins.operands) if (op.kind === 'cp' && valid(op.index)) usage[op.index].code.push({ method: k, offset: ins.offset })
         }
       }

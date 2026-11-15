@@ -19,7 +19,8 @@ export function decodeText(bytes: Uint8Array, extension: string, partial = false
   const sample = bytes.subarray(0, 65536)
   for (let i = 0; i < sample.length; i++) if (sample[i] === 0) return undefined
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes, { stream: partial }).replace(/^﻿/, '')
+    // A byte order mark first is dropped: `ignoreBOM` is false.
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes, { stream: partial })
   } catch {
     if (TEXT_TYPES.has(extension)) return new TextDecoder('windows-1252').decode(bytes)
     return undefined

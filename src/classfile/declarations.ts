@@ -2,6 +2,7 @@
 // flags, annotations and parameter names (MethodParameters or LocalVariableTable).
 
 import { type Annotation, type ElementValue, findAttribute } from './attributes'
+import { joinWithin, listWithin } from './budget'
 import type { ClassFile, Member } from './classfile'
 import { ACC, javaModifiers } from './flags'
 import { displayName, javaChar, javaString } from './names'
@@ -116,44 +117,99 @@ function constValue(pool: ConstantPool, v: Extract<ElementValue, { index: number
   }
 }
 
-export function elementText(v: ElementValue, pool: ConstantPool, namer: Namer, depth = 0): string {
+/**
+ * One annotation's text stops near this many characters, its arrays and elements ending in "…":
+ * a few bytes of a class file make an array of 65,535 values, each a string of 200 characters.
+ */
+export const MAX_ANNOTATION_TEXT = 10_000
+
+/** The characters an annotation's text may still take. */
+type Room = { left: number }
+
+const room = (): Room => ({ left: MAX_ANNOTATION_TEXT })
+
+export function elementText(v: ElementValue, pool: ConstantPool, namer: Namer, depth = 0, left: Room = room()): string {
+  let text: string
   switch (v.tag) {
     case 'e':
-      return `${typeText(namer, pool.str(v.typeIndex))}.${displayName(pool.str(v.nameIndex))}`
+      text = `${typeText(namer, pool.str(v.typeIndex))}.${displayName(pool.str(v.nameIndex))}`
+      break
     case 'c': {
       const d = pool.str(v.index)
-      return d === 'V' ? 'void.class' : `${typeText(namer, d)}.class`
+      text = d === 'V' ? 'void.class' : `${typeText(namer, d)}.class`
+      break
     }
     case '@':
-      return annotationText(v.annotation, pool, namer, depth + 1)
-    case '[':
-      return `{${v.values.map((x) => elementText(x, pool, namer, depth + 1)).join(', ')}}`
+      return annotationText(v.annotation, pool, namer, depth + 1, left)
+    case '[': {
+      let out = '{'
+      for (let i = 0; i < v.values.length; i++) {
+        if (i) {
+          if (left.left <= 0) {
+            out += ', …'
+            break
+          }
+          out += ', '
+          left.left -= 2
+        }
+        out += elementText(v.values[i], pool, namer, depth + 1, left)
+      }
+      return `${out}}`
+    }
     default:
-      return constValue(pool, v)
+      text = constValue(pool, v)
   }
+  left.left -= text.length
+  return text
 }
 
-export function annotationText(a: Annotation, pool: ConstantPool, namer: Namer, depth = 0): string {
+export function annotationText(a: Annotation, pool: ConstantPool, namer: Namer, depth = 0, left: Room = room()): string {
   const type = pool.str(a.typeIndex)
   const name = typeText(namer, type)
+  left.left -= name.length + 1
   if (!a.elements.length) return `@${name}`
   if (depth > 8) return `@${name}(…)`
+  if (a.elements.length === 1 && pool.str(a.elements[0].nameIndex) === 'value') {
+    return `@${name}(${elementText(a.elements[0].value, pool, namer, depth, left)})`
+  }
   const kotlin = type === 'Lkotlin/Metadata;'
-  const parts = a.elements.map((e) => {
+  let out = ''
+  for (let i = 0; i < a.elements.length; i++) {
+    if (i) {
+      if (left.left <= 0) {
+        out += ', …'
+        break
+      }
+      out += ', '
+      left.left -= 2
+    }
+    const e = a.elements[i]
     const key = pool.str(e.nameIndex)
     // Kotlin's d1 is protobuf data in strings: unreadable, and often many kilobytes.
-    if (kotlin && key === 'd1' && e.value.tag === '[') return `d1 = {/* ${e.value.values.length} × protobuf */}`
-    return `${displayName(key)} = ${elementText(e.value, pool, namer, depth)}`
-  })
-  if (parts.length === 1 && pool.str(a.elements[0].nameIndex) === 'value') {
-    return `@${name}(${elementText(a.elements[0].value, pool, namer, depth)})`
+    if (kotlin && key === 'd1' && e.value.tag === '[') {
+      const text = `d1 = {/* ${e.value.values.length} × protobuf */}`
+      left.left -= text.length
+      out += text
+      continue
+    }
+    const shown = displayName(key)
+    left.left -= shown.length + 3
+    out += `${shown} = ${elementText(e.value, pool, namer, depth, left)}`
   }
-  return `@${name}(${parts.join(', ')})`
+  return `@${name}(${out})`
+}
+
+/** Annotations written one after another in a declaration, ending in "…" when they would make a huge line. */
+export function inlineAnnotations(list: readonly Annotation[], pool: ConstantPool, namer: Namer): string {
+  return joinWithin(list, (a) => annotationText(a, pool, namer), ' ')
 }
 
 /** Annotations from the visible and invisible attributes of a member or class. */
 export function annotationsOf(attributes: Member['attributes']): Annotation[] {
-  return attributes.flatMap((a) => (a.value.kind === 'Annotations' ? a.value.annotations : []))
+  const out: Annotation[] = []
+  // A loop, not flatMap: a crafted member has millions of annotations, too many for one spread.
+  for (const a of attributes) if (a.value.kind === 'Annotations') for (const x of a.value.annotations) out.push(x)
+  return out
 }
 
 // Fields ----------------------------------------------------------------------------------
@@ -282,7 +338,8 @@ function sourceParameters(cls: ClassFile, method: Member, descriptor: MethodType
   return run(n - k)
 }
 
-export function methodParts(cls: ClassFile, method: Member, namer: Namer): MethodParts {
+/** The parts of a method's declaration; with `params` false, `params` stays empty, as a short label needs only the types. */
+export function methodParts(cls: ClassFile, method: Member, namer: Namer, params = true): MethodParts {
   const pool = cls.pool
   const descriptor = tryParse(() => parseMethodType(method.descriptor))
   const sigAttr = findAttribute(method.attributes, 'Signature')
@@ -305,28 +362,30 @@ export function methodParts(cls: ClassFile, method: Member, namer: Namer): Metho
   const paramTypes = shape.params.map((t, i) =>
     varargs && i === shape.params.length - 1 && t.kind === 'array' ? `${namer.type(t.of)}...` : namer.type(t)
   )
-  const params = shape.params.map((t, i) => {
+  const written = (params ? shape.params : []).map((t, i) => {
     const type = paramTypes[i]
-    const annotations: string[] = []
+    const annotations: Annotation[] = []
     for (const list of paramAnnotations) {
       // javac counts the declared parameters; other compilers count every descriptor parameter.
       const k = list.length === shape.params.length ? i : list.length === declared ? at[i] : list.length - shape.params.length + i
-      for (const a of list[k] ?? []) annotations.push(annotationText(a, pool, namer))
+      for (const a of list[k] ?? []) annotations.push(a)
     }
     const pname = names[at[i]]
     const isFinal = ((mp?.value.parameters[at[i]]?.access ?? 0) & ACC.FINAL) !== 0
-    return [...annotations, ...(isFinal ? ['final'] : []), type, pname !== undefined ? displayName(pname) : `arg${i}`].join(' ')
+    const before = annotations.length ? [inlineAnnotations(annotations, pool, namer)] : []
+    return [...before, ...(isFinal ? ['final'] : []), type, pname !== undefined ? displayName(pname) : `arg${i}`].join(' ')
   })
-  let throws = shape.throws.map((t) => namer.type(t))
+  // An Exceptions attribute may name 65,535 classes.
+  let throws = listWithin(shape.throws, (t) => namer.type(t))
   if (!throws.length) {
     const ex = findAttribute(method.attributes, 'Exceptions')
-    throws = (ex?.value.indices ?? []).map((i) => namer.name(pool.className(i)))
+    throws = listWithin(ex?.value.indices ?? [], (i) => namer.name(pool.className(i)))
   }
   return {
     typeParams: namer.typeParams(shape.typeParams),
     returns: isInit || method.name === '<clinit>' ? '' : namer.type(shape.ret),
     name,
-    params,
+    params: written,
     paramTypes,
     throws
   }
@@ -384,13 +443,14 @@ const classType = (name: string): JType => ({ kind: 'class', parts: [{ name, arg
 /** Record components as `Type name`, with their annotations. */
 export function recordComponents(cls: ClassFile, namer: Namer): string[] {
   const rec = findAttribute(cls.attributes, 'Record')
-  return (rec?.value.components ?? []).map((c) => {
+  return listWithin(rec?.value.components ?? [], (c) => {
     const sig = findAttribute(c.attributes, 'Signature')
     const text = sig ? cls.pool.utf8(sig.value.index) : undefined
     const descriptor = cls.pool.str(c.descriptorIndex)
     const t = (text && tryParse(() => parseFieldType(text))) || tryParse(() => parseFieldType(descriptor))
-    const annotations = annotationsOf(c.attributes).map((a) => annotationText(a, cls.pool, namer))
-    return [...annotations, t ? namer.type(t) : displayName(descriptor), displayName(cls.pool.str(c.nameIndex))].join(' ')
+    const annotations = annotationsOf(c.attributes)
+    const before = annotations.length ? [inlineAnnotations(annotations, cls.pool, namer)] : []
+    return [...before, t ? namer.type(t) : displayName(descriptor), displayName(cls.pool.str(c.nameIndex))].join(' ')
   })
 }
 
@@ -415,15 +475,16 @@ export function classDeclaration(cls: ClassFile, namer: Namer): string {
   let head = [...modifiers, keyword].join(' ')
   head += ` ${displayName(sourceSimpleName(cls))}${namer.typeParams(sig?.typeParams ?? [])}`
   if (kind === 'record') head += `(${recordComponents(cls, namer).join(', ')})`
-  const supers = interfaces
-    .filter((t) => !(kind === 'annotation' && t.kind === 'class' && t.parts[0]?.name === 'java/lang/annotation/Annotation'))
-    .map((t) => namer.type(t))
+  const supers = listWithin(
+    interfaces.filter((t) => !(kind === 'annotation' && t.kind === 'class' && t.parts[0]?.name === 'java/lang/annotation/Annotation')),
+    (t) => namer.type(t)
+  )
   if (kind === 'class' && superclass && !(superclass.kind === 'class' && superclass.parts[0]?.name === 'java/lang/Object')) {
     head += ` extends ${namer.type(superclass)}`
   }
   if (supers.length) head += ` ${kind === 'interface' || kind === 'annotation' ? 'extends' : 'implements'} ${supers.join(', ')}`
   if (permitted?.value.indices.length) {
-    head += ` permits ${permitted.value.indices.map((i) => namer.name(cls.pool.className(i))).join(', ')}`
+    head += ` permits ${joinWithin(permitted.value.indices, (i) => namer.name(cls.pool.className(i)))}`
   }
   return head
 }
