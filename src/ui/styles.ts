@@ -197,8 +197,10 @@ button, select, input { font: inherit; color: inherit; }
 .cv-pool { flex: 1; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
 .cv-table-scroll { position: relative; overflow: auto; min-height: 0; outline: none; }
 .cv-table-scroll:focus-visible { box-shadow: inset 0 0 0 1px var(--ring); }
+/* Fits a 564 px pane: "Refers to" holds at most "#65535.#65535", and a long value ellipsizes
+   instead of pushing the Used column out of view. */
 .cv-thead, .cv-trow {
-  display: grid; grid-template-columns: 64px 128px minmax(140px, 200px) minmax(320px, 1fr) 48px; gap: 0 10px; align-items: center;
+  display: grid; grid-template-columns: 64px 128px minmax(100px, 140px) minmax(160px, 1fr) 48px; gap: 0 10px; align-items: center;
   padding: 0 12px; white-space: nowrap;
 }
 .cv-thead { position: sticky; top: 0; z-index: 2; height: 26px; background: var(--bg); border-bottom: 1px solid var(--border); color: var(--muted-fg); font-size: 11px; font-weight: 500; }
@@ -241,6 +243,9 @@ button, select, input { font: inherit; color: inherit; }
 .cv-grid th { text-align: left; font-weight: 500; color: var(--muted-fg); font-size: 11px; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .cv-grid td { padding: 3px 10px 3px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); vertical-align: top; }
 .cv-grid td.cv-mono { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Flags and attribute names wrap between words: "anywhere" would let a tight table squeeze the
+   column to one character and split ConstantValue in two. Descriptors still break anywhere. */
+.cv-grid td.cv-words { overflow-wrap: break-word; }
 .cv-attr { margin: 6px 0 0; padding: 6px 0 0; border-top: 1px dashed var(--border); }
 .cv-attr:first-child { border-top: 0; margin-top: 0; }
 .cv-attr-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }

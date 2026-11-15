@@ -98,10 +98,10 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
         kind === 'method'
           ? h('button', { className: 'cv-a cv-mono', 'data-method': k, title: t.showBytecode }, displayName(m.name))
           : h('span', { className: 'cv-mono' }, displayName(m.name))
-      const row = h('tr', {}, h('td', { className: 'cv-mono', title: flagNames(m.access, kind).join(', ') }, `${hex4(m.access)} ${javaFlags(m.access, kind)}`), h('td', {}, name), h('td', { className: 'cv-mono' }, displayName(m.descriptor)))
+      const row = h('tr', {}, h('td', { className: 'cv-mono cv-words', title: flagNames(m.access, kind).join(', ') }, `${hex4(m.access)} ${javaFlags(m.access, kind)}`), h('td', {}, name), h('td', { className: 'cv-mono' }, displayName(m.descriptor)))
       if (kind === 'method') {
         const code = m.attributes.find((a) => a.name === 'Code')
-        const cell = h('td', { className: 'cv-mono' })
+        const cell = h('td', { className: 'cv-mono cv-words' })
         if (code?.value.kind === 'Code') {
           const c = code.value.code
           cell.append(fill(t.codeSummary, { size: t.bytes(c.code.length), stack: c.maxStack, locals: c.maxLocals }))
@@ -136,7 +136,7 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
 
   /** A member's attribute names; a click opens a row below with each attribute in full. */
   function memberAttributes(m: Member, row: HTMLElement, columns: number): HTMLElement {
-    const cell = h('td', { className: 'cv-mono' })
+    const cell = h('td', { className: 'cv-mono cv-words' })
     if (!m.attributes.length) {
       cell.append('—')
       return cell
@@ -210,7 +210,7 @@ export function buildStructure(cls: ClassFile, lang: LanguageInfo, env: Env, act
               h('td', {}, c.inner ? className(pool.className(c.inner)) : '—'),
               h('td', {}, c.outer ? className(pool.className(c.outer)) : '—'),
               h('td', { className: 'cv-mono' }, c.nameIndex ? displayName(pool.str(c.nameIndex)) : '—'),
-              h('td', { className: 'cv-mono' }, `${hex4(c.access)} ${javaFlags(c.access, 'inner')}`)
+              h('td', { className: 'cv-mono cv-words' }, `${hex4(c.access)} ${javaFlags(c.access, 'inner')}`)
             )
           )
         }
