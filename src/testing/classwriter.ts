@@ -4,6 +4,9 @@
 import { encodeModifiedUtf8 } from '../classfile/bytes'
 import { OP } from '../bytecode/opcodes'
 
+/** The binary name javac gives the n-th anonymous class of `outer`: the outer name, `$`, n. */
+export const anonymousName = (outer: string, n: number): string => `${outer}$${n}`
+
 export class Bytes {
   readonly out: number[] = []
   u1(v: number): this {

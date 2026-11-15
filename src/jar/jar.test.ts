@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { helloClass } from '../testing/classwriter'
+import { anonymousName, helloClass } from '../testing/classwriter'
 import { type ZipItem, zip } from '../testing/zipwriter'
 import { openZip } from '../zip/zip'
 import { type JarNode, buildJar, findClass, jarKind, walk } from './jar'
@@ -22,7 +22,7 @@ test('lists packages, nested classes and resources like a Java project', () => {
     cls('demo/sky/Star'),
     cls('demo/sky/Star$Kind'),
     cls('demo/sky/Star$Kind$Inner'),
-    cls('demo/sky/Star$1'),
+    cls(anonymousName('demo/sky/Star', 1)),
     cls('demo/sky/Star$$Lambda'),
     cls('demo/sky/catalog/Catalog'),
     { name: 'demo/sky/messages.properties', data: 'hello=world' },
@@ -42,7 +42,7 @@ test('lists packages, nested classes and resources like a Java project', () => {
     '    class Kind',
     '      class Inner',
     '    class Star$$Lambda',
-    '    class Star$1',
+    `    class ${anonymousName('Star', 1)}`,
     '  file messages.properties',
     'class Default',
     'folder lib',

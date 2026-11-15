@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { type Attr, ClassWriter, asm, u2 } from '../testing/classwriter'
+import { type Attr, ClassWriter, anonymousName, asm, u2 } from '../testing/classwriter'
 import { parseClass } from './classfile'
 import { classKind } from './declarations'
 import { detectLanguage } from './language'
@@ -120,7 +120,7 @@ test('nests member classes from the same archive and names those it cannot see',
       body: [
         ...u2(2),
         ...u2(w.pool.cls('demo/Outer$Mode')), ...u2(w.pool.cls('demo/Outer')), ...u2(w.pool.utf8('Mode')), ...u2(0x4019),
-        ...u2(w.pool.cls('demo/Outer$1')), 0, 0, 0, 0, ...u2(0)
+        ...u2(w.pool.cls(anonymousName('demo/Outer', 1))), 0, 0, 0, 0, ...u2(0)
       ]
     })
   const outer = new ClassWriter({ name: 'demo/Outer' })
@@ -134,7 +134,7 @@ test('nests member classes from the same archive and names those it cannot see',
   const alone = buildOutline(o).text
   assert.match(alone, /^ {4}private Mode mode;$/m)
   assert.match(alone, /^ {4}public static final enum Mode \{ \/\* in Outer\$Mode\.class \*\/ \}$|^ {4}public enum Mode \{ \/\* in Outer\$Mode\.class \*\/ \}$/m)
-  assert.match(alone, /^ {4}\/\/ anonymous class Outer\$1$/m)
+  assert.ok(alone.split('\n').includes(`    // anonymous class ${anonymousName('Outer', 1)}`))
   const nested = buildOutline(o, { resolve: (n) => (n === m.name ? m : undefined) }).text
   assert.match(nested, /^ {4}public enum Mode \{\n {8}FAST;\n {4}\}$/m)
   // Opened alone, a member class still shows its source name.

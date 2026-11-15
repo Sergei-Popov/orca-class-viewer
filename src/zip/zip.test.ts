@@ -149,7 +149,7 @@ test('lists a jar: stored and deflated entries, folders, UTF-8 names', () => {
 test('reads archives with data in front and ZIP64 records', () => {
   const items = [{ name: 'a.txt', data: 'alpha' }, { name: 'b.txt', data: 'beta', zip64: true }]
   // A .jmod starts with "JM", 1, 0; an executable jar may start with a launcher script.
-  for (const prefix of [Uint8Array.from([0x4a, 0x4d, 1, 0]), utf8('#!/bin/sh\nexec java -jar "$0" "$@"\n')]) {
+  for (const prefix of [Uint8Array.from([0x4a, 0x4d, 1, 0]), utf8('#!/bin/sh\nexec java -jar "${0}" "${@}"\n')]) {
     const z = openZip(zip(items, { prefix }))
     assert.equal(new TextDecoder().decode(z.read(z.entries[1]).bytes), 'beta')
   }

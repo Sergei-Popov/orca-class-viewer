@@ -56,7 +56,7 @@ test('rejects malformed descriptors', () => {
 
 test('escapes hidden characters in obfuscated names', () => {
   assert.equal(displayName('a\u200bb'), 'a\\u200bb')
-  assert.equal(displayName('\u202eevil'), '\\u202eevil')
+  assert.equal(displayName('\u202ename'), '\\u202ename')
   assert.equal(displayName('with space'), 'with\\u0020space')
   assert.equal(displayName('\u0000'), '\\u0000')
   assert.equal(displayName(''), '""')
