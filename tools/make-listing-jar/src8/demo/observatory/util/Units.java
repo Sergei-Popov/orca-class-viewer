@@ -1,0 +1,62 @@
+package demo.observatory.util;
+
+import java.util.Locale;
+
+/** Conversions between the units of an observing log. The Java 8 build; see versions/17. */
+public final class Units {
+    public static final double LIGHT_YEAR_KM = 9.4607e12;
+    public static final double AU_KM = 1.495978707e8;
+    public static final double PARSEC_LY = 3.26156;
+    public static final long SECONDS_PER_DAY = 86_400L;
+    public static final int ARCSEC_PER_DEGREE = 3_600;
+    public static final String DISTANCE_UNIT = "ly";
+
+    private Units() {}
+
+    public static double toKilometres(double lightYears) {
+        return lightYears * LIGHT_YEAR_KM;
+    }
+
+    public static double toParsecs(double lightYears) {
+        return lightYears / PARSEC_LY;
+    }
+
+    public static double auToKilometres(double au) {
+        return au * AU_KM;
+    }
+
+    public static double arcsecToDegrees(double arcsec) {
+        return arcsec / ARCSEC_PER_DEGREE;
+    }
+
+    public static String formatDistance(double lightYears) {
+        if (lightYears < 1) {
+            return String.format(Locale.ROOT, "%.0f AU", lightYears * LIGHT_YEAR_KM / AU_KM);
+        }
+        return String.format(Locale.ROOT, "%.1f %s", lightYears, DISTANCE_UNIT);
+    }
+
+    /** 41.2794 is 41° 16′ 46″. */
+    public static String formatAngle(double degrees) {
+        long total = Math.round(Math.abs(degrees) * ARCSEC_PER_DEGREE);
+        String sign = degrees < 0 ? "-" : "";
+        return String.format(Locale.ROOT, "%s%d° %02d′ %02d″", sign, total / 3600, total / 60 % 60, total % 60);
+    }
+
+    /** Days, hours, minutes and seconds of a duration in seconds. */
+    public static long[] split(long seconds) {
+        long[] parts = new long[4];
+        parts[0] = seconds / SECONDS_PER_DAY;
+        parts[1] = seconds % SECONDS_PER_DAY / 3600;
+        parts[2] = seconds % 3600 / 60;
+        parts[3] = seconds % 60;
+        return parts;
+    }
+
+    public static String describe(Object value) {
+        if (value instanceof Double) {
+            return formatDistance((Double) value);
+        }
+        return value + " " + DISTANCE_UNIT;
+    }
+}
