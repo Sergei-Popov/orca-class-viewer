@@ -40,9 +40,14 @@ export class SignatureError extends Error {
   }
 }
 
+/** Type arguments nest at most this deep; javac and kotlinc never come close, and the printers
+ *  recurse once per level. */
+export const MAX_TYPE_NESTING = 64
+
 class Parser {
   readonly s: string
   i = 0
+  private depth = 0
   constructor(s: string) {
     this.s = s
   }
@@ -109,6 +114,7 @@ class Parser {
 
   typeArgs(): TypeArg[] {
     this.eat('<')
+    if (++this.depth > MAX_TYPE_NESTING) throw new SignatureError(this.s, this.i)
     const args: TypeArg[] = []
     while (this.peek() !== '>') {
       const ch = this.peek()
@@ -124,6 +130,7 @@ class Parser {
       if (this.i >= this.s.length) throw new SignatureError(this.s, this.i)
     }
     this.eat('>')
+    this.depth--
     return args
   }
 
@@ -196,6 +203,30 @@ export function parameterSlots(params: JType[]): number {
 /** `java/util/Map$Entry` with nested classes known from InnerClasses. */
 export type InnerInfo = Map<string, { outer: string; simple: string }>
 
+// Link markers: a namer made with `links` wraps each class name it prints as
+// START index MID text END, and the outline turns those into links. They are private-use
+// characters, which every name and string from the file has escaped, so the file cannot fake one.
+export const LINK_START = '\u{e000}'
+export const LINK_MID = '\u{e001}'
+export const LINK_END = '\u{e002}'
+const LINK = /\u{e000}(\d+)\u{e001}([^\u{e000}-\u{e002}]*)\u{e002}/gu
+
+/** Text with the link markers taken out, and where each link went. */
+export function takeLinks(text: string, targets: readonly string[]): { text: string; links: { from: number; to: number; name: string }[] } {
+  if (!text.includes(LINK_START)) return { text, links: [] }
+  const links: { from: number; to: number; name: string }[] = []
+  let out = ''
+  let pos = 0
+  for (const m of text.matchAll(LINK)) {
+    out += text.slice(pos, m.index)
+    const name = targets[Number(m[1])]
+    if (name !== undefined && m[2]) links.push({ from: out.length, to: out.length + m[2].length, name })
+    out += m[2]
+    pos = (m.index ?? 0) + m[0].length
+  }
+  return { text: out + text.slice(pos), links }
+}
+
 /** Prints class names: simple names by default, fully qualified when two would clash. */
 export class Namer {
   private readonly qualified: boolean
@@ -203,17 +234,38 @@ export class Namer {
   private readonly bySimple = new Map<string, string>()
   /** Top-level classes printed by their simple name: what an import list needs. */
   readonly used = new Set<string>()
+  /** With `links`, the classes the link markers point to, by index. */
+  readonly linkTargets: string[] = []
+  private readonly linkIndex: Map<string, number> | undefined
 
   private readonly inScope: (outer: string) => boolean
 
-  constructor(options: { qualified?: boolean; inner?: InnerInfo; inScope?: (outer: string) => boolean } = {}) {
+  constructor(options: { qualified?: boolean; inner?: InnerInfo; inScope?: (outer: string) => boolean; links?: boolean } = {}) {
     this.qualified = options.qualified ?? false
     this.inner = options.inner ?? new Map()
     this.inScope = options.inScope ?? (() => false)
+    this.linkIndex = options.links ? new Map() : undefined
+  }
+
+  /** `text` marked as a link to `internal` when this namer makes links. */
+  link(internal: string, text: string): string {
+    if (!this.linkIndex || !text) return text
+    let i = this.linkIndex.get(internal)
+    if (i === undefined) {
+      i = this.linkTargets.length
+      this.linkTargets.push(internal)
+      this.linkIndex.set(internal, i)
+    }
+    return `${LINK_START}${i}${LINK_MID}${text}${LINK_END}`
   }
 
   /** The Java name of an internal class name. */
   name(internal: string, depth = 0): string {
+    const text = this.plainName(internal, depth)
+    return depth === 0 ? this.link(internal, text) : text
+  }
+
+  private plainName(internal: string, depth: number): string {
     const nested = this.inner.get(internal)
     if (nested && depth < 16) {
       // Inside the outer class (or one nested in it) a member class goes by its simple name.

@@ -160,3 +160,67 @@ test('lists a method like javap -c -v, with constants resolved', () => {
   assert.equal(cpComment(cls.pool, 9999), '// <bad #9999>')
   assert.ok(classListing(cls).length > 5)
 })
+
+// Review 1, findings 2, 3 and 18. The expected text is javap's, copied from `javap -v -p` of
+// Java 21 on this source (javac 21):
+//   static final float F = Float.MIN_VALUE; static final double D = Double.MIN_VALUE;
+//   static final double D2 = 2 * Double.MIN_VALUE;
+//   String a() { return "Illegal null or empty Level name."; }  String b() { return "<Map>\n"; }
+//   String c() { return "tab\there"; }  String d() { return "back\\slash \"q\" it's"; }
+//   Object e(Object o) { try { return o.toString(); } catch (IllegalStateException x) { return x; } }
+test('string, float and stack map text matches javap', () => {
+  const w = new ClassWriter({ name: 'demo/Golden' })
+  const strings = ['Illegal null or empty Level name.', '<Map>\n', 'tab\there', 'back\\slash "q" it\'s']
+  const javap = [
+    String.raw`// String Illegal null or empty Level name.`,
+    String.raw`// String <Map>\n`,
+    String.raw`// String tab\there`,
+    String.raw`// String back\\slash \"q\" it\'s`
+  ]
+  const utf8 = [String.raw`Illegal null or empty Level name.`, String.raw`<Map>\n`, String.raw`tab\there`, String.raw`back\\slash \"q\" it\'s`]
+  const refs = strings.map((s) => w.pool.string(s))
+  refs.forEach((ref, i) => {
+    w.method({ access: 0, name: String.fromCharCode(97 + i), descriptor: '()Ljava/lang/String;', attributes: [w.code({ code: asm('ldc', ref, 'areturn') })] })
+  })
+  const f = w.pool.float(new DataView(Uint32Array.of(1).buffer).getFloat32(0, true))
+  const d = w.pool.double(Number.MIN_VALUE)
+  const d2 = w.pool.double(2 * Number.MIN_VALUE)
+  const ise = w.pool.cls('java/lang/IllegalStateException')
+  // e(Object): same_locals_1_stack_item at 5 holding the caught IllegalStateException.
+  w.method({ access: 0, name: 'e', descriptor: '(Ljava/lang/Object;)Ljava/lang/Object;', attributes: [w.code({ code: asm('aload_1', 'areturn', 'nop', 'nop', 'nop', 'astore_2', 'aload_2', 'areturn'), attributes: [{ name: 'StackMapTable', body: [...u2(1), 69, 7, ...u2(ise)] }] })] })
+  const cls = parseClass(w.toBytes())
+  const listing = text(classListing(cls))
+  javap.forEach((comment, i) => {
+    assert.equal(cpComment(cls.pool, refs[i]), comment)
+    assert.ok(listing.includes(comment), comment)
+    const e = cls.pool.get(refs[i])
+    assert.equal(e?.tag === 8 ? cls.pool.text(e.ref) : undefined, utf8[i])
+  })
+  assert.equal(cls.pool.text(f), '1.4E-45f')
+  assert.equal(cls.pool.text(d), '4.9E-324d')
+  assert.equal(cls.pool.text(d2), '9.9E-324d')
+  // javap: `stack = [ class java/lang/IllegalStateException ]`
+  assert.match(listing, /at 5: same locals, stack \[class java\/lang\/IllegalStateException\]$/m)
+  assert.ok(!/\\u0020/.test(listing))
+})
+
+// Review 1, finding 10: one method can list more lines than a call takes arguments.
+test('lists a method of 131 thousand lines without overflowing the stack', () => {
+  const w = new ClassWriter({ name: 'demo/Huge' })
+  const n = 65535
+  const code = [...new Array(n - 1).fill(0), 0xb1] // nop … return
+  const lines: number[] = [...u2(n)]
+  for (let i = 0; i < n; i++) lines.push(...u2(i), ...u2(i + 1))
+  w.method({ access: 0x0009, name: 'big', descriptor: '()V', attributes: [w.code({ code, attributes: [{ name: 'LineNumberTable', body: lines }] })] })
+  const cls = parseClass(w.toBytes())
+  const listing = classListing(cls)
+  assert.ok(listing.length > 131000)
+})
+
+// Review 1, finding 13: a damaged Code attribute is listed with its error, not dropped.
+test('lists a damaged Code attribute with its error', () => {
+  const w = new ClassWriter({ name: 'demo/Broken' })
+  w.method({ access: 1, name: 'answer', descriptor: '()I', attributes: [{ name: 'Code', body: [0, 1, 0, 1, 0, 0, 3, 232, 0xac, 0, 0, 0, 0] }] })
+  const listing = text(classListing(parseClass(w.toBytes())))
+  assert.match(listing, /^ {2}Code: 13 bytes — the file ends inside the bytecode$/m)
+})

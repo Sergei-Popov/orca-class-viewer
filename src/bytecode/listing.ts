@@ -8,7 +8,7 @@ import { type AttributeInfo, type StackMapFrame, type VerificationType, findAttr
 import type { ClassFile, Member } from '../classfile/classfile'
 import { annotationText, makeNamer, methodDeclaration } from '../classfile/declarations'
 import { flagSummary } from '../classfile/flags'
-import { displayName } from '../classfile/names'
+import { displayName, stringText } from '../classfile/names'
 import type { ConstantPool } from '../classfile/pool'
 import { type Instruction, branchTargets, disassemble } from './disasm'
 
@@ -69,16 +69,16 @@ export function cpComment(pool: ConstantPool, index: number): string {
   if (!e) return `// <bad #${index}>`
   const label = TYPE_LABELS[e.tag] ?? '?'
   const text = pool.text(index)
-  // javap writes "String hello" without quotes.
-  return `// ${label} ${e.tag === 8 ? displayName(pool.str(e.ref)) : text}`
+  // javap writes "String hello world" without quotes, a newline as \n.
+  return `// ${label} ${e.tag === 8 ? stringText(pool.str(e.ref)) : text}`
 }
 
 const VTYPE = ['top', 'int', 'float', 'double', 'long', 'null', 'uninitialized this']
 
 export function verificationText(pool: ConstantPool, v: VerificationType): string {
   if (v.tag === 7) {
-    const name = pool.className(v.index ?? 0)
-    return displayName(name.startsWith('[') ? name : `class ${name}`)
+    const name = displayName(pool.className(v.index ?? 0))
+    return name.startsWith('[') ? name : `class ${name}`
   }
   if (v.tag === 8) return `uninitialized ${v.offset}`
   return VTYPE[v.tag] ?? `?${v.tag}`
@@ -194,7 +194,8 @@ function attributeListing(cls: ClassFile, attributes: AttributeInfo[], indent: s
   const out: ListingLine[] = []
   const line = (...segs: Seg[]) => out.push(method === undefined ? { segs } : { segs, method })
   for (const a of attributes) {
-    if (skip.has(a.name)) continue
+    // Skips by what was read: a damaged Code attribute is Raw and is listed with its error.
+    if (skip.has(a.value.kind)) continue
     const v = a.value
     switch (v.kind) {
       case 'Exceptions':
@@ -269,7 +270,7 @@ export function methodListing(cls: ClassFile, index: number): ListingLine[] {
     line(s('  Code:', 'key'))
     const args = argsSize(m)
     line(s(`    stack=${c.maxStack}, locals=${c.maxLocals}${args === undefined ? '' : `, args_size=${args}`}`, 'comment'))
-    for (const ins of instructions) out.push(...instructionLines(ins, pool, index, targets, localName))
+    for (const ins of instructions) append(out, instructionLines(ins, pool, index, targets, localName))
     if (c.exceptions.length) {
       line(s('    Exception table:', 'key'))
       line(s('       from    to  target type', 'comment'))
@@ -303,11 +304,11 @@ export function methodListing(cls: ClassFile, index: number): ListingLine[] {
         line(s(`    StackMapTable: ${v.frames.length} ${v.frames.length === 1 ? 'frame' : 'frames'}`, 'key'))
         for (const f of v.frames) line(s('      at '), s(String(f.offset), 'jump', f.offset), s(`: ${frameText(pool, f)}`, 'comment'))
       } else {
-        out.push(...attributeListing(cls, [a], '    ', index, new Set()))
+        append(out, attributeListing(cls, [a], '    ', index, new Set()))
       }
     }
   }
-  out.push(...attributeListing(cls, m.attributes, '  ', index, new Set(['Code'])))
+  append(out, attributeListing(cls, m.attributes, '  ', index, new Set(['Code'])))
   return out
 }
 
@@ -344,12 +345,17 @@ function argsSize(m: Member): number | undefined {
   }
 }
 
+/** Appends in a loop: a spread of a long listing would pass every line as an argument. */
+function append(out: ListingLine[], lines: ListingLine[]): void {
+  for (const l of lines) out.push(l)
+}
+
 /** The whole Bytecode tab: every method, a blank line between them. */
 export function classListing(cls: ClassFile): ListingLine[] {
   const out: ListingLine[] = []
   cls.methods.forEach((_, i) => {
     if (i) out.push({ segs: [s('')] })
-    out.push(...methodListing(cls, i))
+    append(out, methodListing(cls, i))
   })
   return out
 }

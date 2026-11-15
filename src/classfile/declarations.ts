@@ -12,6 +12,7 @@ import {
   type JType,
   type MethodType,
   Namer,
+  internalOf,
   parseClassSignature,
   parseFieldType,
   parseMethodType
@@ -66,11 +67,12 @@ export function sourceSimpleName(cls: ClassFile): string {
 }
 
 /** A namer for code inside `cls`: its own member classes, and those of the classes it is
- *  nested in, go by their simple names. */
-export function makeNamer(cls: ClassFile, qualified = false): Namer {
+ *  nested in, go by their simple names. With `links`, class names carry link markers. */
+export function makeNamer(cls: ClassFile, qualified = false, links = false): Namer {
   const top = cls.name.includes('$') ? cls.name.slice(0, cls.name.indexOf('$', cls.name.lastIndexOf('/') + 1)) : cls.name
   return new Namer({
     qualified,
+    links,
     inner: innerInfo(cls),
     inScope: (outer) => outer === cls.name || outer === top || (outer.startsWith(`${top}$`) && cls.name.startsWith(outer))
   })
@@ -223,6 +225,63 @@ function parameterNames(cls: ClassFile, method: Member, descriptor: MethodType |
   return names
 }
 
+const SYNTHETIC_PARAMETER = 0x1000 | 0x8000 // ACC_SYNTHETIC, ACC_MANDATED
+
+const isWide = (t: JType) => t.kind === 'base' && (t.name === 'long' || t.name === 'double')
+
+/** True when `descriptor` is the erasure `signature` compiles to (a type variable fits any
+ *  reference type, since its bound is not at hand). */
+function erasesTo(signature: JType, descriptor: JType): boolean {
+  switch (signature.kind) {
+    case 'base':
+      return descriptor.kind === 'base' && descriptor.name === signature.name
+    case 'var':
+      return descriptor.kind === 'class' || descriptor.kind === 'array'
+    case 'array':
+      return descriptor.kind === 'array' && erasesTo(signature.of, descriptor.of)
+    case 'class':
+      return descriptor.kind === 'class' && internalOf(descriptor) === internalOf(signature)
+  }
+}
+
+/**
+ * Which descriptor parameter each Signature parameter is. A Signature leaves out synthetic
+ * parameters: an inner class's outer instance and an enum's name and ordinal come first, the
+ * variables a local class captures come last. MethodParameters flags say which ones they are;
+ * else the LocalVariableTable, which names only declared parameters; else the run of descriptor
+ * parameters the Signature's types erase to; else the last ones.
+ */
+function sourceParameters(cls: ClassFile, method: Member, descriptor: MethodType | undefined, shape: MethodType): number[] {
+  const k = shape.params.length
+  const n = descriptor?.params.length ?? k
+  const run = (skip: number) => shape.params.map((_, i) => skip + i)
+  if (!descriptor || shape === descriptor || n <= k) return run(0)
+  const mp = findAttribute(method.attributes, 'MethodParameters')
+  if (mp && mp.value.parameters.length === n) {
+    const real = mp.value.parameters.flatMap((p, i) => (p.access & SYNTHETIC_PARAMETER ? [] : [i]))
+    if (real.length === k) return real
+  }
+  const code = findAttribute(method.attributes, 'Code')
+  const lvt = code && findAttribute(code.value.code.attributes, 'LocalVariableTable')
+  if (lvt) {
+    const real: number[] = []
+    let slot = method.access & ACC.STATIC ? 0 : 1
+    descriptor.params.forEach((t, i) => {
+      const v = lvt.value.variables.find((x) => x.slot === slot && x.start === 0)
+      const name = v && cls.pool.utf8(v.nameIndex)
+      if (name && !/^(this|val)\$/.test(name)) real.push(i)
+      slot += isWide(t) ? 2 : 1
+    })
+    if (real.length === k) return real
+  }
+  const own = ownInnerEntry(cls)
+  const expected = classKind(cls) === 'enum' ? 2 : own && !(own.access & ACC.STATIC) ? 1 : 0
+  const fits = (skip: number) => shape.params.every((t, i) => erasesTo(t, descriptor.params[skip + i]))
+  const order = [expected, ...Array.from({ length: n - k + 1 }, (_, i) => i).filter((i) => i !== expected)]
+  for (const skip of order) if (skip <= n - k && fits(skip)) return run(skip)
+  return run(n - k)
+}
+
 export function methodParts(cls: ClassFile, method: Member, namer: Namer): MethodParts {
   const pool = cls.pool
   const descriptor = tryParse(() => parseMethodType(method.descriptor))
@@ -236,9 +295,8 @@ export function methodParts(cls: ClassFile, method: Member, namer: Namer): Metho
     return { typeParams: '', returns: '', name: `${name} /* ${displayName(method.descriptor)} */`, params: [], paramTypes: [], throws: [] }
   }
   const names = parameterNames(cls, method, descriptor)
-  // A Signature leaves out synthetic leading parameters (an inner class's outer instance, an
-  // enum's name and ordinal); line names and annotations up from the end.
-  const skip = Math.max(0, names.length - shape.params.length)
+  const at = sourceParameters(cls, method, descriptor, shape)
+  const declared = descriptor?.params.length ?? shape.params.length
   const paramAnnotations = method.attributes
     .filter((a) => a.value.kind === 'ParameterAnnotations')
     .map((a) => (a.value.kind === 'ParameterAnnotations' ? a.value.parameters : []))
@@ -251,11 +309,12 @@ export function methodParts(cls: ClassFile, method: Member, namer: Namer): Metho
     const type = paramTypes[i]
     const annotations: string[] = []
     for (const list of paramAnnotations) {
-      const at = list.length === shape.params.length ? i : list.length - shape.params.length + i
-      for (const a of list[at] ?? []) annotations.push(annotationText(a, pool, namer))
+      // javac counts the declared parameters; other compilers count every descriptor parameter.
+      const k = list.length === shape.params.length ? i : list.length === declared ? at[i] : list.length - shape.params.length + i
+      for (const a of list[k] ?? []) annotations.push(annotationText(a, pool, namer))
     }
-    const pname = names[skip + i]
-    const isFinal = ((mp?.value.parameters[skip + i]?.access ?? 0) & ACC.FINAL) !== 0
+    const pname = names[at[i]]
+    const isFinal = ((mp?.value.parameters[at[i]]?.access ?? 0) & ACC.FINAL) !== 0
     return [...annotations, ...(isFinal ? ['final'] : []), type, pname !== undefined ? displayName(pname) : `arg${i}`].join(' ')
   })
   let throws = shape.throws.map((t) => namer.type(t))
@@ -335,7 +394,9 @@ export function classDeclaration(cls: ClassFile, namer: Namer): string {
   if (kind === 'enum' || kind === 'record' || kind === 'interface' || kind === 'annotation') {
     modifiers = modifiers.filter((m) => m !== 'static' && m !== 'abstract' && (kind !== 'record' || m !== 'final'))
   }
-  const permitted = findAttribute(cls.attributes, 'PermittedSubclasses')
+  // javac gives an enum with constant bodies a PermittedSubclasses attribute, but Java has no
+  // sealed enums: its constant classes show as comments instead.
+  const permitted = kind === 'enum' ? undefined : findAttribute(cls.attributes, 'PermittedSubclasses')
   if (permitted) modifiers.push('sealed')
   const sig = classSignature(cls)
   const superclass = sig?.superclass ?? (cls.superName ? classType(cls.superName) : undefined)
